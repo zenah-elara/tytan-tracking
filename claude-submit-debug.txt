@@ -1,0 +1,1986 @@
+===== src/lib/leave/actions.ts =====
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { getCurrentUserProfile } from "@/lib/auth/session";
+import { createClient } from "@/lib/supabase/server";
+import type { LeavePolicyType, LeaveRequestStatus } from "@/types/leave";
+
+const ADMIN_LEAVE_TYPES_PATH = "/admin/leave-types";
+const ADMIN_LEAVE_POLICIES_PATH = "/admin/leave-policies";
+const ADMIN_LEAVE_BALANCES_PATH = "/admin/leave-balances";
+const EMPLOYEE_LEAVE_PATH = "/employee/leave";
+const EMPLOYEE_NEW_LEAVE_PATH = "/employee/leave/new";
+const MANAGER_LEAVE_APPROVALS_PATH = "/manager/leave-approvals";
+
+const LEAVE_POLICY_TYPES: LeavePolicyType[] = [
+  "accrued",
+  "fixed",
+  "unlimited",
+  "unpaid",
+];
+const EMPLOYEE_FILED_LEAVE_TYPE_NAMES = [
+  "Sick Leave",
+  "Vacation Leave",
+  "Emergency Leave",
+  "Floating Leave",
+];
+
+export async function createLeaveTypeAction(formData: FormData) {
+  const name = readRequiredText(formData, "name");
+  const description = readOptionalText(formData, "description");
+  const policyType = readLeavePolicyType(formData);
+
+  if (!name) {
+    redirectWithStatus(ADMIN_LEAVE_TYPES_PATH, "error", "missing-name");
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("leave_types").insert({
+    name,
+    description,
+    policy_type: policyType,
+    is_paid: formData.getAll("is_paid").includes("true"),
+    requires_approval: formData.getAll("requires_approval").includes("true"),
+    is_active: true,
+  });
+
+  if (error) {
+    redirectWithStatus(ADMIN_LEAVE_TYPES_PATH, "error", "create-failed");
+  }
+
+  revalidatePath(ADMIN_LEAVE_TYPES_PATH);
+  redirectWithStatus(ADMIN_LEAVE_TYPES_PATH, "success", "created");
+}
+
+export async function createLeavePolicyAction(formData: FormData) {
+  const leaveTypeId = readRequiredText(formData, "leave_type_id");
+  const name = readRequiredText(formData, "name");
+  const effectiveFrom = readRequiredText(formData, "effective_from");
+  const effectiveTo = readOptionalText(formData, "effective_to");
+
+  if (!leaveTypeId || !name || !effectiveFrom) {
+    redirectWithStatus(ADMIN_LEAVE_POLICIES_PATH, "error", "missing-policy");
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("leave_policies").insert({
+    leave_type_id: leaveTypeId,
+    name,
+    annual_credit: readNumberOrNull(formData, "annual_credit"),
+    monthly_accrual: readNumberOrNull(formData, "monthly_accrual"),
+    carryover_allowed: formData.getAll("carryover_allowed").includes("true"),
+    max_carryover: readNumberOrNull(formData, "max_carryover"),
+    effective_from: effectiveFrom,
+    effective_to: effectiveTo,
+    is_active: true,
+  });
+
+  if (error) {
+    redirectWithStatus(ADMIN_LEAVE_POLICIES_PATH, "error", "create-failed");
+  }
+
+  revalidatePath(ADMIN_LEAVE_POLICIES_PATH);
+  redirectWithStatus(ADMIN_LEAVE_POLICIES_PATH, "success", "created");
+}
+
+export async function upsertLeaveBalanceAction(formData: FormData) {
+  const employeeId = readRequiredText(formData, "employee_id");
+  const leaveTypeId = readRequiredText(formData, "leave_type_id");
+  const year = readInteger(formData, "year");
+
+  if (!employeeId || !leaveTypeId || !year) {
+    redirectWithStatus(ADMIN_LEAVE_BALANCES_PATH, "error", "missing-balance");
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("leave_balances").upsert(
+    {
+      employee_id: employeeId,
+      leave_type_id: leaveTypeId,
+      year,
+      balance: readNumber(formData, "balance"),
+      used: readNumber(formData, "used"),
+      pending: readNumber(formData, "pending"),
+    },
+    { onConflict: "employee_id,leave_type_id,year" },
+  );
+
+  if (error) {
+    redirectWithStatus(ADMIN_LEAVE_BALANCES_PATH, "error", "save-failed");
+  }
+
+  revalidatePath(ADMIN_LEAVE_BALANCES_PATH);
+  redirectWithStatus(ADMIN_LEAVE_BALANCES_PATH, "success", "saved");
+}
+
+export async function submitLeaveRequestAction(formData: FormData) {
+  const employee = await getCurrentEmployee();
+  const leaveTypeId = readRequiredText(formData, "leave_type_id");
+  const startDate = readRequiredText(formData, "start_date");
+  const endDate = readRequiredText(formData, "end_date");
+  const requestedHours = readNumber(formData, "requested_hours");
+  const reason = readOptionalText(formData, "reason");
+
+  if (!employee || !leaveTypeId || !startDate || !endDate || requestedHours <= 0) {
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "missing-request");
+  }
+
+  const supabase = await createClient();
+  const { data: leaveType, error: leaveTypeError } = await supabase
+    .from("leave_types")
+    .select("name,is_active")
+    .eq("id", leaveTypeId)
+    .maybeSingle();
+
+  if (
+    leaveTypeError ||
+    !leaveType?.is_active ||
+    !EMPLOYEE_FILED_LEAVE_TYPE_NAMES.includes(leaveType.name)
+  ) {
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "invalid-leave-type");
+  }
+
+  const { error } = await supabase.from("leave_requests").insert({
+    employee_id: employee.id,
+    leave_type_id: leaveTypeId,
+    start_date: startDate,
+    end_date: endDate,
+    total_hours: requestedHours,
+    reason,
+    status: "pending_supervisor",
+  });
+
+  if (error) {
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
+  }
+
+  revalidatePath(EMPLOYEE_LEAVE_PATH);
+  redirectWithStatus(EMPLOYEE_LEAVE_PATH, "success", "submitted");
+}
+
+export async function reviewLeaveRequestAction(formData: FormData) {
+  const requestId = readRequiredText(formData, "request_id");
+  const decision = readRequiredText(formData, "decision");
+
+  if (!requestId || !decision) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "missing-review");
+  }
+
+  const reviewer = await getCurrentEmployee();
+
+  if (!reviewer) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "review-not-authorized");
+  }
+
+  const supabase = await createClient();
+  const { data: request, error: requestError } = await supabase
+    .from("leave_requests")
+    .select("id,status")
+    .eq("id", requestId)
+    .maybeSingle();
+
+  if (requestError || !request) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "request-not-found");
+  }
+
+  const currentStatus = request.status as LeaveRequestStatus;
+  let updateValues: Record<string, string> | null = null;
+
+  if (decision === "supervisor_approve") {
+    if (currentStatus !== "pending_supervisor") {
+      redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "wrong-status");
+    }
+
+    updateValues = {
+      status: "pending_admin",
+      supervisorapprovedat: new Date().toISOString(),
+      supervisorapprovedby: reviewer.id,
+    };
+  } else if (decision === "admin_approve") {
+    if (currentStatus !== "pending_admin" || reviewer.role !== "admin") {
+      redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "wrong-status");
+    }
+
+    updateValues = {
+      status: "approved",
+      adminapprovedat: new Date().toISOString(),
+      adminapprovedby: reviewer.id,
+    };
+  } else if (decision === "reject") {
+    if (
+      currentStatus !== "pending_supervisor" &&
+      currentStatus !== "pending_admin"
+    ) {
+      redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "wrong-status");
+    }
+
+    updateValues = {
+      status: "rejected",
+    };
+  }
+
+  if (!updateValues) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "missing-review");
+  }
+
+  const { error } = await supabase
+    .from("leave_requests")
+    .update(updateValues)
+    .eq("id", requestId);
+
+  if (error) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "review-failed");
+  }
+
+  revalidatePath(MANAGER_LEAVE_APPROVALS_PATH);
+  revalidatePath(EMPLOYEE_LEAVE_PATH);
+  redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "success", "reviewed");
+}
+
+export async function deleteLeaveRequestAction(formData: FormData) {
+  const requestId = readRequiredText(formData, "request_id");
+  const returnPath = readLeaveReturnPath(formData);
+  const actor = await getCurrentEmployee();
+
+  if (!requestId || !actor) {
+    redirectWithStatus(returnPath, "error", "missing-delete");
+  }
+
+  const supabase = await createClient();
+  const { data: request, error: requestError } = await supabase
+    .from("leave_requests")
+    .select("id,employee_id,status")
+    .eq("id", requestId)
+    .maybeSingle();
+
+  if (requestError || !request) {
+    redirectWithStatus(returnPath, "error", "request-not-found");
+  }
+
+  const ownsRequest = request.employee_id === actor.id;
+  const canDelete = actor.role === "admin" || ownsRequest;
+
+  if (!canDelete || request.status === "deleted") {
+    redirectWithStatus(returnPath, "error", "delete-not-authorized");
+  }
+
+  const { error } = await supabase
+    .from("leave_requests")
+    .update({
+      status: "deleted",
+      deletedat: new Date().toISOString(),
+      deletedby: actor.id,
+    })
+    .eq("id", requestId);
+
+  if (error) {
+    redirectWithStatus(returnPath, "error", "delete-failed");
+  }
+
+  revalidateLeavePages();
+  redirectWithStatus(returnPath, "success", "deleted");
+}
+
+async function getCurrentEmployee() {
+  const profile = await getCurrentUserProfile();
+
+  if (!profile) {
+    return null;
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("employees")
+    .select("id,full_name,work_email")
+    .eq("profile_id", profile.id)
+    .maybeSingle();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return {
+    ...(data as { id: string; full_name: string; work_email: string }),
+    role: profile.role,
+  };
+}
+
+function revalidateLeavePages() {
+  revalidatePath(EMPLOYEE_LEAVE_PATH);
+  revalidatePath(MANAGER_LEAVE_APPROVALS_PATH);
+  revalidatePath(ADMIN_LEAVE_BALANCES_PATH);
+}
+
+function readLeaveReturnPath(formData: FormData) {
+  const value = readRequiredText(formData, "return_to");
+
+  if (value === MANAGER_LEAVE_APPROVALS_PATH) {
+    return MANAGER_LEAVE_APPROVALS_PATH;
+  }
+
+  return EMPLOYEE_LEAVE_PATH;
+}
+
+function readRequiredText(formData: FormData, key: string) {
+  return String(formData.get(key) ?? "").trim();
+}
+
+function readOptionalText(formData: FormData, key: string) {
+  const value = readRequiredText(formData, key);
+  return value.length > 0 ? value : null;
+}
+
+function readLeavePolicyType(formData: FormData): LeavePolicyType {
+  const value = readRequiredText(formData, "policy_type");
+
+  if (LEAVE_POLICY_TYPES.includes(value as LeavePolicyType)) {
+    return value as LeavePolicyType;
+  }
+
+  return "fixed";
+}
+
+function readNumber(formData: FormData, key: string) {
+  const value = Number.parseFloat(readRequiredText(formData, key));
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function readNumberOrNull(formData: FormData, key: string) {
+  const rawValue = readRequiredText(formData, key);
+
+  if (!rawValue) {
+    return null;
+  }
+
+  const value = Number.parseFloat(rawValue);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function readInteger(formData: FormData, key: string) {
+  const value = Number.parseInt(readRequiredText(formData, key), 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function redirectWithStatus(
+  path: string,
+  status: "success" | "error",
+  message: string,
+): never {
+  redirect(`${path}?${status}=${message}`);
+}
+
+
+===== src/app/employee/leave/new/page.tsx =====
+import { submitLeaveRequestAction } from "@/lib/leave/actions";
+import { createClient } from "@/lib/supabase/server";
+
+type PageProps = {
+  searchParams: Promise<{ error?: string }>;
+};
+
+type LeaveTypeRow = {
+  id: string;
+  name: string;
+  is_active: boolean;
+};
+
+const employeeFiledLeaveTypeNames = new Set([
+  "Sick Leave",
+  "Vacation Leave",
+  "Emergency Leave",
+  "Floating Leave",
+]);
+
+export default async function NewLeavePage({ searchParams }: PageProps) {
+  const params = await searchParams;
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("leave_types")
+    .select("id,name,is_active")
+    .eq("is_active", true)
+    .order("name", { ascending: true });
+  const leaveTypes = ((data ?? []) as LeaveTypeRow[]).filter((type) =>
+    employeeFiledLeaveTypeNames.has(type.name),
+  );
+
+  return (
+    <div className="grid gap-6">
+      <header className="rounded-lg bg-[#001f4d] p-6 text-white">
+        <p className="text-xs font-bold uppercase text-[#f2d300]">
+          Employee leave
+        </p>
+        <h1 className="mt-2 text-2xl font-bold tracking-normal">
+          New Leave Request
+        </h1>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-white/80">
+          Submit a Sick Leave, Vacation Leave, Emergency Leave, or Floating
+          Leave request in hours.
+        </p>
+      </header>
+
+      <StatusMessage error={params.error ?? error?.message} />
+
+      <section className="rounded-lg border border-[#efe6b6] bg-[#fffdf2] p-5 text-sm text-zinc-700">
+        You may request partial leave, such as 4 hours for a half-day.
+        Submitted requests go to supervisor review first, then admin approval.
+        Approval does not deduct hours; balance processing happens later after
+        the leave date passes.
+      </section>
+
+      <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
+        {leaveTypes.length === 0 ? (
+          <p className="text-sm text-zinc-600">
+            No employee-filed leave types are configured yet. Add Sick Leave,
+            Vacation Leave, Emergency Leave, and Floating Leave from admin
+            setup.
+          </p>
+        ) : (
+          <form action={submitLeaveRequestAction} className="grid gap-4 lg:grid-cols-2">
+            <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+              Leave type
+              <select name="leave_type_id" required className={fieldClassName}>
+                <option value="">Choose leave type</option>
+                {leaveTypes.map((type) => (
+                  <option key={type.id} value={type.id}>
+                    {type.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <FormField label="Requested hours" name="requested_hours" type="number" step="0.25" required />
+            <FormField label="Start date" name="start_date" type="date" required />
+            <FormField label="End date" name="end_date" type="date" required />
+            <label className="grid gap-2 text-sm font-semibold text-[#001f4d] lg:col-span-2">
+              Reason
+              <textarea
+                name="reason"
+                rows={4}
+                className="rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 py-2 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30"
+              />
+            </label>
+            <div className="lg:col-span-2">
+              <button className="h-11 rounded-lg bg-[#f2d300] px-4 text-sm font-bold text-[#001f4d]">
+                Submit request
+              </button>
+            </div>
+          </form>
+        )}
+      </section>
+    </div>
+  );
+}
+
+const fieldClassName =
+  "h-11 rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30";
+
+function FormField({
+  label,
+  name,
+  type = "text",
+  required,
+  step,
+}: {
+  label: string;
+  name: string;
+  type?: string;
+  required?: boolean;
+  step?: string;
+}) {
+  return (
+    <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+      {label}
+      <input
+        name={name}
+        type={type}
+        required={required}
+        step={step}
+        className={fieldClassName}
+      />
+    </label>
+  );
+}
+
+function StatusMessage({ error }: { error?: string }) {
+  if (!error) return null;
+  return (
+    <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+      That request could not be submitted. Please check the form and try again.
+    </p>
+  );
+}
+
+
+===== src/types/leave.ts =====
+export type LeavePolicyType = "accrued" | "fixed" | "unlimited" | "unpaid";
+
+export type LeaveRequestStatus =
+  | "pending_supervisor"
+  | "pending_admin"
+  | "approved"
+  | "rejected"
+  | "deleted";
+
+export type LeaveProcessingStatus =
+  | "notprocessed"
+  | "processed"
+  | "partiallyunpaid"
+  | "fullyunpaid"
+  | "skipped";
+
+export type LeaveTransactionType =
+  | "credit"
+  | "deduction"
+  | "adjustment"
+  | "reversal";
+
+export type LeaveDeductionStatus =
+  | "not_deducted"
+  | "deducted"
+  | "partially_unpaid"
+  | "fully_unpaid"
+  | "reversal_needed";
+
+export type LeaveReversalStatus =
+  | "not_reversed"
+  | "reversed"
+  | "reversal_not_required";
+
+export type LeaveType = {
+  id: string;
+  name: string;
+  description: string | null;
+  policyType: LeavePolicyType;
+  isPaid: boolean;
+  requiresApproval: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LeavePolicy = {
+  id: string;
+  leaveTypeId: string;
+  name: string;
+  annualCredit: number | null;
+  monthlyAccrual: number | null;
+  carryoverAllowed: boolean;
+  maxCarryover: number | null;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LeaveBalance = {
+  id: string;
+  employeeId: string;
+  leaveTypeId: string;
+  balance: number;
+  used: number;
+  pending: number;
+  year: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LeaveRequest = {
+  id: string;
+  employeeId: string;
+  leaveTypeId: string;
+  startDate: string;
+  endDate: string;
+  totalHours: number;
+  paidHours: number;
+  unpaidHours: number;
+  deductionStatus: LeaveDeductionStatus;
+  deductionNotes: string | null;
+  reason: string | null;
+  status: LeaveRequestStatus;
+  submittedAt: string;
+  supervisorApprovedAt: string | null;
+  supervisorApprovedBy: string | null;
+  adminApprovedAt: string | null;
+  adminApprovedBy: string | null;
+  deletedAt: string | null;
+  deletedBy: string | null;
+  processedAt: string | null;
+  processingStatus: LeaveProcessingStatus;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewNotes: string | null;
+  cancelledAt: string | null;
+  cancelledBy: string | null;
+  cancellationReason: string | null;
+  reversalStatus: LeaveReversalStatus;
+  reversedAt: string | null;
+  reversedBy: string | null;
+  reversalNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LeaveTransaction = {
+  id: string;
+  employeeId: string;
+  leaveTypeId: string;
+  leaveRequestId: string | null;
+  relatedTransactionId: string | null;
+  transactionType: LeaveTransactionType;
+  amount: number;
+  balanceAfter: number | null;
+  notes: string | null;
+  createdBy: string | null;
+  createdAt: string;
+};
+
+
+===== simple leave migration =====
+-- Tytan Teams Tracking Tool
+-- Simple Leave Workflow migration draft.
+--
+-- Local migration draft only. Do not apply until reviewed.
+-- This simplifies Leave V1 to a single status column workflow:
+-- pending_supervisor -> pending_admin -> approved/rejected/deleted.
+-- Approval does not deduct balances. Processing/deduction happens later after
+-- the leave date passes.
+
+drop policy if exists leave_requests_insert_own
+  on public.leave_requests;
+drop policy if exists leave_requests_manager_update_direct_reports
+  on public.leave_requests;
+drop policy if exists leave_requests_employee_delete_own
+  on public.leave_requests;
+
+-- Existing RPCs are intentionally left in place while runtime still calls the
+-- previous workflow. They can be retired only after runtime cleanup is applied.
+
+alter table public.leave_requests
+  alter column status drop default;
+
+alter type public.leave_request_status
+  rename to leave_request_status_old;
+
+create type public.leave_request_status as enum (
+  'pending_supervisor',
+  'pending_admin',
+  'approved',
+  'rejected',
+  'deleted'
+);
+
+alter table public.leave_requests
+  alter column status type public.leave_request_status
+  using (
+    case status::text
+      when 'pending' then 'pending_supervisor'
+      when 'approved' then 'approved'
+      when 'rejected' then 'rejected'
+      when 'cancelled' then 'deleted'
+      else 'pending_supervisor'
+    end
+  )::public.leave_request_status;
+
+alter table public.leave_requests
+  alter column status set default 'pending_supervisor';
+
+drop type public.leave_request_status_old;
+
+alter table public.leave_requests
+  add column if not exists supervisorapprovedat timestamptz,
+  add column if not exists supervisorapprovedby uuid
+    references public.employees(id) on delete set null,
+  add column if not exists adminapprovedat timestamptz,
+  add column if not exists adminapprovedby uuid
+    references public.employees(id) on delete set null,
+  add column if not exists deletedat timestamptz,
+  add column if not exists deletedby uuid
+    references public.employees(id) on delete set null,
+  add column if not exists processedat timestamptz,
+  add column if not exists processingstatus text not null default 'notprocessed';
+
+alter table public.leave_requests
+  drop constraint if exists leave_requests_processingstatus_check,
+  add constraint leave_requests_processingstatus_check
+    check (
+      processingstatus in (
+        'notprocessed',
+        'processed',
+        'partiallyunpaid',
+        'fullyunpaid',
+        'skipped'
+      )
+    );
+
+create index if not exists leave_requests_supervisorapprovedby_idx
+  on public.leave_requests(supervisorapprovedby);
+
+create index if not exists leave_requests_adminapprovedby_idx
+  on public.leave_requests(adminapprovedby);
+
+create index if not exists leave_requests_deletedat_idx
+  on public.leave_requests(deletedat);
+
+create index if not exists leave_requests_processingstatus_idx
+  on public.leave_requests(processingstatus);
+
+comment on column public.leave_requests.status is
+  'Simple Leave V1 status: pending_supervisor, pending_admin, approved, rejected, or deleted.';
+
+comment on column public.leave_requests.supervisorapprovedat is
+  'Timestamp when the supervisor approved the request and moved it to admin review.';
+
+comment on column public.leave_requests.supervisorapprovedby is
+  'Supervisor employee actor who moved the request to admin review.';
+
+comment on column public.leave_requests.adminapprovedat is
+  'Timestamp when the admin gave final approval.';
+
+comment on column public.leave_requests.adminapprovedby is
+  'Admin employee actor who gave final approval.';
+
+comment on column public.leave_requests.deletedat is
+  'Timestamp when the request was soft deleted.';
+
+comment on column public.leave_requests.deletedby is
+  'Employee actor who soft deleted the request.';
+
+comment on column public.leave_requests.processedat is
+  'Timestamp when post-date leave processing/deduction was completed.';
+
+comment on column public.leave_requests.processingstatus is
+  'Post-date processing state for future deduction: notprocessed, processed, partiallyunpaid, fullyunpaid, or skipped.';
+
+create policy leave_requests_insert_own
+on public.leave_requests
+for insert
+to authenticated
+with check (
+  employee_id = public.current_employee_id()
+  and status = 'pending_supervisor'
+);
+
+create policy leave_requests_employee_delete_own
+on public.leave_requests
+for update
+to authenticated
+using (
+  employee_id = public.current_employee_id()
+  and status <> 'deleted'
+)
+with check (
+  employee_id = public.current_employee_id()
+  and status = 'deleted'
+);
+
+create policy leave_requests_manager_update_direct_reports
+on public.leave_requests
+for update
+to authenticated
+using (
+  public.is_employee_manager(employee_id)
+  and employee_id <> public.current_employee_id()
+)
+with check (
+  public.is_employee_manager(employee_id)
+  and employee_id <> public.current_employee_id()
+  and status in ('pending_admin', 'approved', 'rejected')
+);
+
+-- Admin all-scope management remains handled by leave_requests_admin_manage.
+-- Runtime should enforce:
+-- - submit as pending_supervisor
+-- - supervisor approve to pending_admin
+-- - admin approve to approved
+-- - reject to rejected
+-- - soft delete to deleted
+-- - no balance deduction on approval
+
+
+===== leave migrations =====
+-- Tytan Teams Tracking Tool
+-- Phase 12A leave management schema draft.
+--
+-- Local migration draft only. Do not apply until reviewed.
+-- This file contains no credentials and uses the existing app/RLS helpers.
+
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'leave_policy_type') then
+    create type public.leave_policy_type as enum (
+      'accrued',
+      'fixed',
+      'unlimited',
+      'unpaid'
+    );
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'leave_request_status') then
+    create type public.leave_request_status as enum (
+      'pending',
+      'approved',
+      'rejected',
+      'cancelled'
+    );
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'leave_transaction_type') then
+    create type public.leave_transaction_type as enum (
+      'credit',
+      'deduction',
+      'adjustment',
+      'reversal'
+    );
+  end if;
+end
+$$;
+
+create table public.leave_types (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  description text,
+  policy_type public.leave_policy_type not null default 'fixed',
+  is_paid boolean not null default true,
+  requires_approval boolean not null default true,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.leave_policies (
+  id uuid primary key default gen_random_uuid(),
+  leave_type_id uuid not null references public.leave_types(id) on delete cascade,
+  name text not null,
+  annual_credit numeric(6,2),
+  monthly_accrual numeric(6,2),
+  carryover_allowed boolean not null default false,
+  max_carryover numeric(6,2),
+  effective_from date not null,
+  effective_to date,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint leave_policies_effective_dates_check
+    check (effective_to is null or effective_to >= effective_from),
+  constraint leave_policies_annual_credit_check
+    check (annual_credit is null or annual_credit >= 0),
+  constraint leave_policies_monthly_accrual_check
+    check (monthly_accrual is null or monthly_accrual >= 0),
+  constraint leave_policies_max_carryover_check
+    check (max_carryover is null or max_carryover >= 0)
+);
+
+create table public.leave_balances (
+  id uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees(id) on delete cascade,
+  leave_type_id uuid not null references public.leave_types(id) on delete cascade,
+  balance numeric(7,2) not null default 0,
+  used numeric(7,2) not null default 0,
+  pending numeric(7,2) not null default 0,
+  year integer not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (employee_id, leave_type_id, year),
+  constraint leave_balances_balance_check
+    check (balance >= 0),
+  constraint leave_balances_used_check
+    check (used >= 0),
+  constraint leave_balances_pending_check
+    check (pending >= 0),
+  constraint leave_balances_year_check
+    check (year >= 2020)
+);
+
+create table public.leave_requests (
+  id uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees(id) on delete cascade,
+  leave_type_id uuid not null references public.leave_types(id) on delete restrict,
+  start_date date not null,
+  end_date date not null,
+  total_days numeric(6,2) not null,
+  reason text,
+  status public.leave_request_status not null default 'pending',
+  submitted_at timestamptz not null default now(),
+  reviewed_by uuid references public.employees(id) on delete set null,
+  reviewed_at timestamptz,
+  review_notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint leave_requests_date_range_check
+    check (end_date >= start_date),
+  constraint leave_requests_total_days_check
+    check (total_days > 0)
+);
+
+create table public.leave_transactions (
+  id uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees(id) on delete cascade,
+  leave_type_id uuid not null references public.leave_types(id) on delete restrict,
+  leave_request_id uuid references public.leave_requests(id) on delete set null,
+  transaction_type public.leave_transaction_type not null,
+  amount numeric(7,2) not null,
+  balance_after numeric(7,2),
+  notes text,
+  created_by uuid references public.employees(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create trigger set_leave_types_updated_at
+before update on public.leave_types
+for each row
+execute function public.set_updated_at();
+
+create trigger set_leave_policies_updated_at
+before update on public.leave_policies
+for each row
+execute function public.set_updated_at();
+
+create trigger set_leave_balances_updated_at
+before update on public.leave_balances
+for each row
+execute function public.set_updated_at();
+
+create trigger set_leave_requests_updated_at
+before update on public.leave_requests
+for each row
+execute function public.set_updated_at();
+
+create index leave_types_is_active_idx
+  on public.leave_types(is_active);
+
+create index leave_policies_leave_type_id_idx
+  on public.leave_policies(leave_type_id);
+
+create index leave_policies_effective_dates_idx
+  on public.leave_policies(effective_from, effective_to);
+
+create index leave_balances_employee_id_idx
+  on public.leave_balances(employee_id);
+
+create index leave_balances_leave_type_id_idx
+  on public.leave_balances(leave_type_id);
+
+create index leave_balances_year_idx
+  on public.leave_balances(year);
+
+create index leave_requests_employee_id_idx
+  on public.leave_requests(employee_id);
+
+create index leave_requests_status_idx
+  on public.leave_requests(status);
+
+create index leave_requests_dates_idx
+  on public.leave_requests(start_date, end_date);
+
+create index leave_requests_reviewed_by_idx
+  on public.leave_requests(reviewed_by);
+
+create index leave_transactions_employee_id_idx
+  on public.leave_transactions(employee_id);
+
+create index leave_transactions_leave_type_id_idx
+  on public.leave_transactions(leave_type_id);
+
+create index leave_transactions_leave_request_id_idx
+  on public.leave_transactions(leave_request_id);
+
+alter table public.leave_types enable row level security;
+alter table public.leave_policies enable row level security;
+alter table public.leave_balances enable row level security;
+alter table public.leave_requests enable row level security;
+alter table public.leave_transactions enable row level security;
+
+-- Leave types and policies: signed-in users can read active setup data for
+-- request forms and balance displays. Admins can manage all setup data.
+create policy leave_types_select_active_or_admin
+on public.leave_types
+for select
+to authenticated
+using (
+  is_active = true
+  or public.is_admin()
+);
+
+create policy leave_types_admin_manage
+on public.leave_types
+for all
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
+
+create policy leave_policies_select_active_or_admin
+on public.leave_policies
+for select
+to authenticated
+using (
+  (is_active = true and effective_from <= current_date)
+  or public.is_admin()
+);
+
+create policy leave_policies_admin_manage
+on public.leave_policies
+for all
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
+
+-- Leave balances: employees read their own balances. Managers can read direct
+-- report balances for approval context. Admins can manage all balances.
+create policy leave_balances_select_scoped
+on public.leave_balances
+for select
+to authenticated
+using (
+  employee_id = public.current_employee_id()
+  or public.is_employee_manager(employee_id)
+  or public.is_admin()
+);
+
+create policy leave_balances_admin_manage
+on public.leave_balances
+for all
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
+
+-- Leave requests: employees submit and read their own requests; managers can
+-- read and update direct-report requests; admins can manage all requests.
+-- TODO: Pair manager/admin status changes with server-side action validation
+-- so approval updates only change review fields and allowed statuses.
+create policy leave_requests_select_scoped
+on public.leave_requests
+for select
+to authenticated
+using (
+  employee_id = public.current_employee_id()
+  or public.is_employee_manager(employee_id)
+  or public.is_admin()
+);
+
+create policy leave_requests_insert_own
+on public.leave_requests
+for insert
+to authenticated
+with check (
+  employee_id = public.current_employee_id()
+  and status = 'pending'
+);
+
+create policy leave_requests_manager_update_direct_reports
+on public.leave_requests
+for update
+to authenticated
+using (
+  public.is_employee_manager(employee_id)
+  and employee_id <> public.current_employee_id()
+)
+with check (
+  public.is_employee_manager(employee_id)
+  and employee_id <> public.current_employee_id()
+  and status in ('approved', 'rejected')
+);
+
+create policy leave_requests_admin_manage
+on public.leave_requests
+for all
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
+
+-- TODO: Employee cancellation should be implemented with a server action or RPC
+-- that only changes status from pending to cancelled. Broad update RLS cannot
+-- safely restrict ordinary table updates to only the status column.
+
+-- Leave transactions: transactions are the audit trail for credit/deduction
+-- events. Employees and managers can read scoped transactions; admins manage.
+create policy leave_transactions_select_scoped
+on public.leave_transactions
+for select
+to authenticated
+using (
+  employee_id = public.current_employee_id()
+  or public.is_employee_manager(employee_id)
+  or public.is_admin()
+);
+
+create policy leave_transactions_admin_manage
+on public.leave_transactions
+for all
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
+
+-- No anonymous policies are defined.
+-- Tytan Teams Tracking Tool
+-- Phase 12E leave request outcome migration draft.
+--
+-- Local migration draft only. Do not apply until reviewed.
+-- This preserves existing requested-hour values by renaming total_days to
+-- total_hours, then adds request-level paid/unpaid deduction outcome fields.
+
+alter table public.leave_requests
+  rename column total_days to total_hours;
+
+alter table public.leave_requests
+  rename constraint leave_requests_total_days_check
+  to leave_requests_total_hours_check;
+
+alter table public.leave_requests
+  add column paid_hours numeric(7,2) not null default 0,
+  add column unpaid_hours numeric(7,2) not null default 0,
+  add column deduction_status text not null default 'not_deducted',
+  add column deduction_notes text;
+
+alter table public.leave_requests
+  add constraint leave_requests_paid_hours_check
+    check (paid_hours >= 0),
+  add constraint leave_requests_unpaid_hours_check
+    check (unpaid_hours >= 0),
+  add constraint leave_requests_deduction_status_check
+    check (
+      deduction_status in (
+        'not_deducted',
+        'deducted',
+        'partially_unpaid',
+        'fully_unpaid',
+        'reversal_needed'
+      )
+    );
+
+comment on column public.leave_requests.total_hours is
+  'Requested leave quantity in hours. Renamed from total_days for Tytan hours-based leave tracking.';
+
+comment on column public.leave_requests.paid_hours is
+  'Approved hours covered by available paid leave balance.';
+
+comment on column public.leave_requests.unpaid_hours is
+  'Approved hours not covered by available paid leave balance.';
+
+comment on column public.leave_requests.deduction_status is
+  'Deduction outcome for approved requests: not_deducted, deducted, partially_unpaid, fully_unpaid, or reversal_needed.';
+
+comment on column public.leave_requests.deduction_notes is
+  'Reviewer/admin notes explaining paid, unpaid, partial unpaid, or reversal handling.';
+-- Tytan Teams Tracking Tool
+-- Phase 12H manager-safe leave approval RPC draft.
+--
+-- Local migration draft only. Do not apply until reviewed.
+-- This keeps leave balance and transaction table policies narrow while giving
+-- managers a controlled approval path for direct-report leave requests.
+
+create or replace function public.approve_leave_request_with_deduction(
+  target_request_id uuid,
+  reviewer_notes text default null
+)
+returns public.leave_requests
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  current_employee uuid;
+  request_row public.leave_requests%rowtype;
+  requested_leave_type public.leave_types%rowtype;
+  source_names text[];
+  source_name text;
+  source_leave_type public.leave_types%rowtype;
+  balance_row public.leave_balances%rowtype;
+  requested_hours numeric(7,2);
+  remaining_hours numeric(7,2);
+  deduction_amount numeric(7,2);
+  paid_hours_total numeric(7,2) := 0;
+  unpaid_hours_total numeric(7,2) := 0;
+  request_year integer;
+  deduction_status_value text := 'fully_unpaid';
+  deduction_summary text := '';
+  reviewer_notes_clean text := nullif(btrim(coalesce(reviewer_notes, '')), '');
+begin
+  if auth.uid() is null then
+    raise exception 'You must be signed in to review leave requests.';
+  end if;
+
+  current_employee := public.current_employee_id();
+
+  if current_employee is null then
+    raise exception 'Your employee profile is not set up for leave review.';
+  end if;
+
+  select *
+  into request_row
+  from public.leave_requests
+  where id = target_request_id
+  for update;
+
+  if not found then
+    raise exception 'Leave request was not found.';
+  end if;
+
+  if not (
+    public.is_admin()
+    or (
+      public.is_employee_manager(request_row.employee_id)
+      and request_row.employee_id <> current_employee
+    )
+  ) then
+    raise exception 'You can only approve leave for direct reports.';
+  end if;
+
+  if request_row.status <> 'pending' then
+    raise exception 'Only pending leave requests can be approved.';
+  end if;
+
+  if request_row.deduction_status <> 'not_deducted' then
+    raise exception 'This leave request already has a deduction outcome.';
+  end if;
+
+  requested_hours := round(request_row.total_hours::numeric, 2);
+
+  if requested_hours <= 0 then
+    raise exception 'Requested hours must be greater than 0.';
+  end if;
+
+  select *
+  into requested_leave_type
+  from public.leave_types
+  where id = request_row.leave_type_id;
+
+  if not found then
+    raise exception 'Leave type was not found.';
+  end if;
+
+  source_names := case requested_leave_type.name
+    when 'Sick Leave' then array['Sick Leave', 'Monthly Accrued Leave']
+    when 'Vacation Leave' then array['Vacation Leave', 'Monthly Accrued Leave']
+    when 'Emergency Leave' then array['Emergency Leave', 'Monthly Accrued Leave']
+    when 'Floating Leave' then array['Floating Leave']
+    else null
+  end;
+
+  if source_names is null then
+    raise exception 'This leave type is not an employee-filed leave option.';
+  end if;
+
+  request_year := extract(year from request_row.start_date)::integer;
+  remaining_hours := requested_hours;
+
+  foreach source_name in array source_names loop
+    exit when remaining_hours <= 0;
+
+    select *
+    into source_leave_type
+    from public.leave_types
+    where name = source_name;
+
+    if not found then
+      continue;
+    end if;
+
+    select *
+    into balance_row
+    from public.leave_balances
+    where employee_id = request_row.employee_id
+      and leave_type_id = source_leave_type.id
+      and year = request_year
+    for update;
+
+    if not found then
+      continue;
+    end if;
+
+    if balance_row.balance <= 0 then
+      continue;
+    end if;
+
+    deduction_amount := least(remaining_hours, round(balance_row.balance::numeric, 2));
+
+    if deduction_amount <= 0 then
+      continue;
+    end if;
+
+    update public.leave_balances
+    set
+      balance = round((balance_row.balance - deduction_amount)::numeric, 2),
+      used = round((balance_row.used + deduction_amount)::numeric, 2)
+    where id = balance_row.id;
+
+    insert into public.leave_transactions (
+      employee_id,
+      leave_type_id,
+      leave_request_id,
+      transaction_type,
+      amount,
+      balance_after,
+      notes,
+      created_by
+    )
+    values (
+      request_row.employee_id,
+      source_leave_type.id,
+      request_row.id,
+      'deduction',
+      deduction_amount,
+      round((balance_row.balance - deduction_amount)::numeric, 2),
+      concat(
+        'Approved ',
+        requested_leave_type.name,
+        ': deducted ',
+        deduction_amount,
+        ' hrs from ',
+        source_leave_type.name,
+        '.'
+      ),
+      current_employee
+    );
+
+    paid_hours_total := round((paid_hours_total + deduction_amount)::numeric, 2);
+    remaining_hours := round((remaining_hours - deduction_amount)::numeric, 2);
+    deduction_summary := concat(
+      deduction_summary,
+      case when deduction_summary = '' then '' else '; ' end,
+      deduction_amount,
+      ' hrs from ',
+      source_leave_type.name
+    );
+  end loop;
+
+  unpaid_hours_total := round((requested_hours - paid_hours_total)::numeric, 2);
+
+  if unpaid_hours_total > 0 and reviewer_notes_clean is null then
+    raise exception 'Please add review notes before approving unpaid or partially unpaid leave.';
+  end if;
+
+  deduction_status_value := case
+    when paid_hours_total > 0 and unpaid_hours_total = 0 then 'deducted'
+    when paid_hours_total > 0 and unpaid_hours_total > 0 then 'partially_unpaid'
+    else 'fully_unpaid'
+  end;
+
+  if deduction_summary = '' then
+    deduction_summary := 'No paid balance deducted';
+  end if;
+
+  if unpaid_hours_total > 0 then
+    deduction_summary := concat(
+      deduction_summary,
+      '; ',
+      unpaid_hours_total,
+      ' hrs unpaid'
+    );
+  end if;
+
+  if reviewer_notes_clean is not null then
+    deduction_summary := concat(deduction_summary, '. Notes: ', reviewer_notes_clean);
+  else
+    deduction_summary := concat(deduction_summary, '.');
+  end if;
+
+  update public.leave_requests
+  set
+    status = 'approved',
+    reviewed_by = current_employee,
+    reviewed_at = now(),
+    review_notes = reviewer_notes_clean,
+    paid_hours = paid_hours_total,
+    unpaid_hours = unpaid_hours_total,
+    deduction_status = deduction_status_value,
+    deduction_notes = deduction_summary
+  where id = request_row.id
+    and status = 'pending'
+    and deduction_status = 'not_deducted'
+  returning *
+  into request_row;
+
+  if not found then
+    raise exception 'Leave request could not be approved because it changed during review.';
+  end if;
+
+  return request_row;
+end;
+$$;
+
+comment on function public.approve_leave_request_with_deduction(uuid, text) is
+  'Safely approves a pending leave request and performs paid/unpaid deduction for admins or direct managers only. This avoids broad manager write policies on leave_balances and leave_transactions.';
+
+create or replace function public.reject_leave_request(
+  target_request_id uuid,
+  reviewer_notes text default null
+)
+returns public.leave_requests
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  current_employee uuid;
+  request_row public.leave_requests%rowtype;
+  reviewer_notes_clean text := nullif(btrim(coalesce(reviewer_notes, '')), '');
+begin
+  if auth.uid() is null then
+    raise exception 'You must be signed in to review leave requests.';
+  end if;
+
+  current_employee := public.current_employee_id();
+
+  if current_employee is null then
+    raise exception 'Your employee profile is not set up for leave review.';
+  end if;
+
+  select *
+  into request_row
+  from public.leave_requests
+  where id = target_request_id
+  for update;
+
+  if not found then
+    raise exception 'Leave request was not found.';
+  end if;
+
+  if not (
+    public.is_admin()
+    or (
+      public.is_employee_manager(request_row.employee_id)
+      and request_row.employee_id <> current_employee
+    )
+  ) then
+    raise exception 'You can only reject leave for direct reports.';
+  end if;
+
+  if request_row.status <> 'pending' then
+    raise exception 'Only pending leave requests can be rejected.';
+  end if;
+
+  update public.leave_requests
+  set
+    status = 'rejected',
+    reviewed_by = current_employee,
+    reviewed_at = now(),
+    review_notes = reviewer_notes_clean,
+    deduction_status = 'not_deducted',
+    deduction_notes = reviewer_notes_clean
+  where id = request_row.id
+    and status = 'pending'
+  returning *
+  into request_row;
+
+  if not found then
+    raise exception 'Leave request could not be rejected because it changed during review.';
+  end if;
+
+  return request_row;
+end;
+$$;
+
+comment on function public.reject_leave_request(uuid, text) is
+  'Safely rejects a pending leave request for admins or direct managers only without touching leave balances.';
+
+revoke all on function public.approve_leave_request_with_deduction(uuid, text) from public;
+revoke all on function public.reject_leave_request(uuid, text) from public;
+
+grant execute on function public.approve_leave_request_with_deduction(uuid, text) to authenticated;
+grant execute on function public.reject_leave_request(uuid, text) to authenticated;
+-- Tytan Teams Tracking Tool
+-- Phase 12K leave cancellation/reversal schema draft.
+--
+-- Local migration draft only. Do not apply until reviewed.
+-- Runtime RPCs and UI wiring will be drafted after this schema is manually
+-- applied to the separate Tytan Teams Supabase project.
+
+alter table public.leave_requests
+  add column cancelled_at timestamptz,
+  add column cancelled_by uuid references public.employees(id) on delete set null,
+  add column cancellation_reason text,
+  add column reversal_status text not null default 'not_reversed',
+  add column reversed_at timestamptz,
+  add column reversed_by uuid references public.employees(id) on delete set null,
+  add column reversal_notes text;
+
+alter table public.leave_requests
+  add constraint leave_requests_reversal_status_check
+    check (
+      reversal_status in (
+        'not_reversed',
+        'reversed',
+        'reversal_not_required'
+      )
+    ),
+  add constraint leave_requests_reversed_metadata_check
+    check (
+      reversal_status <> 'reversed'
+      or (reversed_at is not null and reversed_by is not null)
+    );
+
+alter table public.leave_transactions
+  add column related_transaction_id uuid
+    references public.leave_transactions(id) on delete set null;
+
+create index leave_requests_cancelled_at_idx
+  on public.leave_requests(cancelled_at);
+
+create index leave_requests_reversal_status_idx
+  on public.leave_requests(reversal_status);
+
+create index leave_transactions_related_transaction_id_idx
+  on public.leave_transactions(related_transaction_id);
+
+comment on column public.leave_requests.cancelled_at is
+  'Timestamp when a pending request was cancelled or an approved request was cancelled after reversal handling.';
+
+comment on column public.leave_requests.cancelled_by is
+  'Employee actor who cancelled a pending request or cancelled an approved request through reversal handling.';
+
+comment on column public.leave_requests.cancellation_reason is
+  'Optional cancellation reason. RPCs should encourage a reason but avoid blocking admin correction workflows unless policy requires it.';
+
+comment on column public.leave_requests.reversal_status is
+  'Reversal lifecycle for approved leave: not_reversed, reversed, or reversal_not_required.';
+
+comment on column public.leave_requests.reversed_at is
+  'Timestamp when approved leave balance restoration was completed.';
+
+comment on column public.leave_requests.reversed_by is
+  'Employee actor who completed approved leave balance restoration.';
+
+comment on column public.leave_requests.reversal_notes is
+  'Notes explaining approved leave reversal or why reversal was not required.';
+
+comment on column public.leave_transactions.related_transaction_id is
+  'Links a reversal transaction to the original deduction transaction it restores.';
+
+comment on constraint leave_requests_reversed_metadata_check
+on public.leave_requests is
+  'Double reversal prevention and source matching should be enforced by reversal RPC logic; this constraint only requires core metadata when reversal_status is reversed.';
+-- Phase 12L: manager-safe leave cancellation/reversal RPC draft.
+-- This migration is intended for manual review/application through Supabase SQL
+-- Editor. It does not loosen table RLS policies and does not require a service
+-- role key in the app.
+
+create or replace function public.cancel_pending_leave_request(
+  target_request_id uuid,
+  cancellation_reason text default null
+)
+returns public.leave_requests
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  current_employee uuid;
+  request_row public.leave_requests%rowtype;
+  clean_reason text := nullif(btrim(coalesce(cancellation_reason, '')), '');
+begin
+  if auth.uid() is null then
+    raise exception 'You must be signed in to cancel leave requests.';
+  end if;
+
+  current_employee := public.current_employee_id();
+
+  if current_employee is null then
+    raise exception 'Your employee profile is not set up for leave cancellation.';
+  end if;
+
+  select *
+  into request_row
+  from public.leave_requests
+  where id = target_request_id
+  for update;
+
+  if not found then
+    raise exception 'Leave request was not found.';
+  end if;
+
+  if request_row.status <> 'pending' then
+    raise exception 'Only pending leave requests can be cancelled.';
+  end if;
+
+  if not (
+    public.is_admin()
+    or request_row.employee_id = current_employee
+    or (
+      request_row.employee_id <> current_employee
+      and public.is_employee_manager(request_row.employee_id)
+    )
+  ) then
+    raise exception 'You can only cancel your own pending leave or pending leave for direct reports.';
+  end if;
+
+  update public.leave_requests
+  set
+    status = 'cancelled',
+    cancelled_at = now(),
+    cancelled_by = current_employee,
+    cancellation_reason = clean_reason,
+    deduction_status = 'not_deducted',
+    reversal_status = 'reversal_not_required',
+    updated_at = now()
+  where id = request_row.id
+    and status = 'pending'
+  returning *
+  into request_row;
+
+  if not found then
+    raise exception 'Leave request could not be cancelled because it changed. Please refresh and try again.';
+  end if;
+
+  return request_row;
+end;
+$$;
+
+comment on function public.cancel_pending_leave_request(uuid, text) is
+  'Cancels pending leave requests in scope. Employees can cancel their own pending requests; managers can cancel direct-report pending requests; admins can cancel any pending request. No balances are changed because pending requests do not reserve balance.';
+
+create or replace function public.reverse_approved_leave_request(
+  target_request_id uuid,
+  reversal_notes text default null
+)
+returns public.leave_requests
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  current_employee uuid;
+  request_row public.leave_requests%rowtype;
+  balance_row public.leave_balances%rowtype;
+  original_transaction record;
+  clean_notes text := nullif(btrim(coalesce(reversal_notes, '')), '');
+  request_year integer;
+  new_balance numeric(7, 2);
+  new_used numeric(7, 2);
+  deduction_count integer := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be signed in to reverse approved leave requests.';
+  end if;
+
+  current_employee := public.current_employee_id();
+
+  if current_employee is null then
+    raise exception 'Your employee profile is not set up for leave reversal.';
+  end if;
+
+  if clean_notes is null then
+    raise exception 'Please add reversal notes before reversing approved leave.';
+  end if;
+
+  select *
+  into request_row
+  from public.leave_requests
+  where id = target_request_id
+  for update;
+
+  if not found then
+    raise exception 'Leave request was not found.';
+  end if;
+
+  if request_row.status <> 'approved' then
+    raise exception 'Only approved leave requests can be reversed.';
+  end if;
+
+  if request_row.reversal_status <> 'not_reversed' then
+    raise exception 'This leave request has already been reversed or does not require reversal.';
+  end if;
+
+  if not (
+    public.is_admin()
+    or (
+      request_row.employee_id <> current_employee
+      and public.is_employee_manager(request_row.employee_id)
+    )
+  ) then
+    raise exception 'Only admins or direct managers can reverse approved leave requests.';
+  end if;
+
+  if exists (
+    select 1
+    from public.leave_transactions reversal
+    join public.leave_transactions original
+      on original.id = reversal.related_transaction_id
+    where original.leave_request_id = request_row.id
+      and original.transaction_type = 'deduction'
+      and reversal.transaction_type = 'reversal'
+  ) then
+    raise exception 'This leave request already has reversal transactions.';
+  end if;
+
+  request_year := extract(year from request_row.start_date)::integer;
+
+  for original_transaction in
+    select *
+    from public.leave_transactions
+    where leave_request_id = request_row.id
+      and transaction_type = 'deduction'
+      and amount > 0
+    order by created_at, id
+    for update
+  loop
+    deduction_count := deduction_count + 1;
+
+    if exists (
+      select 1
+      from public.leave_transactions
+      where related_transaction_id = original_transaction.id
+        and transaction_type = 'reversal'
+    ) then
+      raise exception 'This leave request already has reversal transactions.';
+    end if;
+
+    select *
+    into balance_row
+    from public.leave_balances
+    where employee_id = request_row.employee_id
+      and leave_type_id = original_transaction.leave_type_id
+      and year = request_year
+    for update;
+
+    if not found then
+      raise exception 'A leave balance needed for reversal was not found. Please repair the balance record before reversing this request.';
+    end if;
+
+    new_balance := round((balance_row.balance + original_transaction.amount)::numeric, 2);
+    new_used := greatest(
+      round((balance_row.used - original_transaction.amount)::numeric, 2),
+      0::numeric
+    );
+
+    update public.leave_balances
+    set
+      balance = new_balance,
+      used = new_used,
+      updated_at = now()
+    where id = balance_row.id;
+
+    insert into public.leave_transactions (
+      employee_id,
+      leave_type_id,
+      leave_request_id,
+      transaction_type,
+      amount,
+      balance_after,
+      notes,
+      created_by,
+      related_transaction_id
+    )
+    values (
+      request_row.employee_id,
+      original_transaction.leave_type_id,
+      request_row.id,
+      'reversal',
+      original_transaction.amount,
+      new_balance,
+      concat('Reversed approved leave request. Notes: ', clean_notes),
+      current_employee,
+      original_transaction.id
+    );
+  end loop;
+
+  if request_row.paid_hours > 0 and deduction_count = 0 then
+    raise exception 'Original deduction transactions were not found for this approved request. Please audit the request before reversal.';
+  end if;
+
+  update public.leave_requests
+  set
+    status = 'cancelled',
+    cancelled_at = now(),
+    cancelled_by = current_employee,
+    cancellation_reason = clean_notes,
+    reversal_status = case
+      when deduction_count = 0 then 'reversal_not_required'
+      else 'reversed'
+    end,
+    reversed_at = case
+      when deduction_count = 0 then reversed_at
+      else now()
+    end,
+    reversed_by = case
+      when deduction_count = 0 then reversed_by
+      else current_employee
+    end,
+    reversal_notes = clean_notes,
+    updated_at = now()
+  where id = request_row.id
+    and status = 'approved'
+    and reversal_status = 'not_reversed'
+  returning *
+  into request_row;
+
+  if not found then
+    raise exception 'Leave request could not be reversed because it changed. Please refresh and try again.';
+  end if;
+
+  return request_row;
+end;
+$$;
+
+comment on function public.reverse_approved_leave_request(uuid, text) is
+  'Reverses approved leave in admin/direct-manager scope. Restores only paid deduction transactions, creates linked reversal transactions, and marks the request cancelled. It leaves deduction_status as the original paid/unpaid outcome; reversal_status is the reversal source of truth.';
+
+-- SECURITY DEFINER is used so the workflow can update protected balances and
+-- transactions atomically without giving managers broad table write access. The
+-- function bodies enforce auth, admin/direct-report scope, pending/approved
+-- state, and double-reversal checks.
+revoke all on function public.cancel_pending_leave_request(uuid, text) from public;
+revoke all on function public.reverse_approved_leave_request(uuid, text) from public;
+
+grant execute on function public.cancel_pending_leave_request(uuid, text) to authenticated;
+grant execute on function public.reverse_approved_leave_request(uuid, text) to authenticated;
+-- Tytan Teams Tracking Tool
+-- Simple Leave Workflow migration draft.
+--
+-- Local migration draft only. Do not apply until reviewed.
+-- This simplifies Leave V1 to a single status column workflow:
+-- pending_supervisor -> pending_admin -> approved/rejected/deleted.
+-- Approval does not deduct balances. Processing/deduction happens later after
+-- the leave date passes.
+
+drop policy if exists leave_requests_insert_own
+  on public.leave_requests;
+drop policy if exists leave_requests_manager_update_direct_reports
+  on public.leave_requests;
+drop policy if exists leave_requests_employee_delete_own
+  on public.leave_requests;
+
+-- Existing RPCs are intentionally left in place while runtime still calls the
+-- previous workflow. They can be retired only after runtime cleanup is applied.
+
+alter table public.leave_requests
+  alter column status drop default;
+
+alter type public.leave_request_status
+  rename to leave_request_status_old;
+
+create type public.leave_request_status as enum (
+  'pending_supervisor',
+  'pending_admin',
+  'approved',
+  'rejected',
+  'deleted'
+);
+
+alter table public.leave_requests
+  alter column status type public.leave_request_status
+  using (
+    case status::text
+      when 'pending' then 'pending_supervisor'
+      when 'approved' then 'approved'
+      when 'rejected' then 'rejected'
+      when 'cancelled' then 'deleted'
+      else 'pending_supervisor'
+    end
+  )::public.leave_request_status;
+
+alter table public.leave_requests
+  alter column status set default 'pending_supervisor';
+
+drop type public.leave_request_status_old;
+
+alter table public.leave_requests
+  add column if not exists supervisorapprovedat timestamptz,
+  add column if not exists supervisorapprovedby uuid
+    references public.employees(id) on delete set null,
+  add column if not exists adminapprovedat timestamptz,
+  add column if not exists adminapprovedby uuid
+    references public.employees(id) on delete set null,
+  add column if not exists deletedat timestamptz,
+  add column if not exists deletedby uuid
+    references public.employees(id) on delete set null,
+  add column if not exists processedat timestamptz,
+  add column if not exists processingstatus text not null default 'notprocessed';
+
+alter table public.leave_requests
+  drop constraint if exists leave_requests_processingstatus_check,
+  add constraint leave_requests_processingstatus_check
+    check (
+      processingstatus in (
+        'notprocessed',
+        'processed',
+        'partiallyunpaid',
+        'fullyunpaid',
+        'skipped'
+      )
+    );
+
+create index if not exists leave_requests_supervisorapprovedby_idx
+  on public.leave_requests(supervisorapprovedby);
+
+create index if not exists leave_requests_adminapprovedby_idx
+  on public.leave_requests(adminapprovedby);
+
+create index if not exists leave_requests_deletedat_idx
+  on public.leave_requests(deletedat);
+
+create index if not exists leave_requests_processingstatus_idx
+  on public.leave_requests(processingstatus);
+
+comment on column public.leave_requests.status is
+  'Simple Leave V1 status: pending_supervisor, pending_admin, approved, rejected, or deleted.';
+
+comment on column public.leave_requests.supervisorapprovedat is
+  'Timestamp when the supervisor approved the request and moved it to admin review.';
+
+comment on column public.leave_requests.supervisorapprovedby is
+  'Supervisor employee actor who moved the request to admin review.';
+
+comment on column public.leave_requests.adminapprovedat is
+  'Timestamp when the admin gave final approval.';
+
+comment on column public.leave_requests.adminapprovedby is
+  'Admin employee actor who gave final approval.';
+
+comment on column public.leave_requests.deletedat is
+  'Timestamp when the request was soft deleted.';
+
+comment on column public.leave_requests.deletedby is
+  'Employee actor who soft deleted the request.';
+
+comment on column public.leave_requests.processedat is
+  'Timestamp when post-date leave processing/deduction was completed.';
+
+comment on column public.leave_requests.processingstatus is
+  'Post-date processing state for future deduction: notprocessed, processed, partiallyunpaid, fullyunpaid, or skipped.';
+
+create policy leave_requests_insert_own
+on public.leave_requests
+for insert
+to authenticated
+with check (
+  employee_id = public.current_employee_id()
+  and status = 'pending_supervisor'
+);
+
+create policy leave_requests_employee_delete_own
+on public.leave_requests
+for update
+to authenticated
+using (
+  employee_id = public.current_employee_id()
+  and status <> 'deleted'
+)
+with check (
+  employee_id = public.current_employee_id()
+  and status = 'deleted'
+);
+
+create policy leave_requests_manager_update_direct_reports
+on public.leave_requests
+for update
+to authenticated
+using (
+  public.is_employee_manager(employee_id)
+  and employee_id <> public.current_employee_id()
+)
+with check (
+  public.is_employee_manager(employee_id)
+  and employee_id <> public.current_employee_id()
+  and status in ('pending_admin', 'approved', 'rejected')
+);
+
+-- Admin all-scope management remains handled by leave_requests_admin_manage.
+-- Runtime should enforce:
+-- - submit as pending_supervisor
+-- - supervisor approve to pending_admin
+-- - admin approve to approved
+-- - reject to rejected
+-- - soft delete to deleted
+-- - no balance deduction on approval

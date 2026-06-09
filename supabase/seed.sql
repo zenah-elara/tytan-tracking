@@ -1,0 +1,44 @@
+-- Tytan Teams Tracking Tool seed draft.
+--
+-- This file is intentionally commented out. It is not production data and
+-- should not be executed until seed expectations are reviewed.
+
+-- insert into public.departments (name, description)
+-- values
+--   ('Operations', 'Draft department for workforce operations'),
+--   ('Support', 'Draft department for customer support');
+
+-- insert into public.job_roles (department_id, title, description)
+-- select id, 'Team Member', 'Draft role for initial testing'
+-- from public.departments
+-- where name = 'Operations';
+
+-- insert into public.work_schedules (
+--   name,
+--   timezone,
+--   shift_start,
+--   shift_end,
+--   grace_period_minutes,
+--   expected_minutes_per_day
+-- )
+-- values (
+--   'Weekday Day Shift',
+--   'Asia/Manila',
+--   '09:00',
+--   '18:00',
+--   10,
+--   480
+-- );
+
+-- insert into public.work_schedule_days (schedule_id, weekday, is_workday)
+-- select id, weekday_value::public.weekday, true
+-- from public.work_schedules
+-- cross join (
+--   values
+--     ('monday'),
+--     ('tuesday'),
+--     ('wednesday'),
+--     ('thursday'),
+--     ('friday')
+-- ) as weekdays(weekday_value)
+-- where name = 'Weekday Day Shift';

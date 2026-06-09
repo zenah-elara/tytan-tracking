@@ -1,0 +1,63 @@
+import { canAccessRoute } from "@/lib/auth/permissions";
+import type { AppRole } from "@/types/auth";
+
+export type NavigationLink = {
+  label: string;
+  href: string;
+};
+
+export type NavigationGroup = {
+  title: string;
+  links: NavigationLink[];
+};
+
+export const navigationGroups: NavigationGroup[] = [
+  {
+    title: "Employee",
+    links: [
+      { label: "Home", href: "/employee" },
+      { label: "Clock", href: "/employee/clock" },
+      { label: "Leave", href: "/employee/leave" },
+    ],
+  },
+  {
+    title: "Manager",
+    links: [
+      { label: "Team", href: "/manager" },
+      { label: "Clock Records", href: "/manager/clock-records" },
+      { label: "Attendance Records", href: "/manager/attendance-records" },
+      { label: "Attendance Logs", href: "/manager/attendance-logs" },
+      { label: "Payroll Review", href: "/manager/payroll-review" },
+      { label: "Leave Queue", href: "/manager/leave-approvals" },
+      { label: "Leave Log", href: "/manager/leave-log" },
+    ],
+  },
+  {
+    title: "Admin",
+    links: [
+      { label: "Dashboard", href: "/admin" },
+      { label: "People", href: "/admin/employees" },
+      { label: "Employee Relations", href: "/admin/employee-relations" },
+      { label: "Schedules", href: "/admin/schedules" },
+      { label: "Monthly Day-Offs", href: "/admin/monthly-day-offs" },
+      { label: "Clock Records", href: "/admin/clock-records" },
+      { label: "Attendance Records", href: "/admin/attendance-records" },
+      { label: "Attendance Logs", href: "/admin/attendance-logs" },
+      { label: "Payroll Review", href: "/admin/payroll-review" },
+      { label: "Leave Setup", href: "/admin/leave-types" },
+      { label: "Leave Accruals", href: "/admin/leave-accruals" },
+      { label: "Leave Deductions", href: "/admin/leave-deductions" },
+      { label: "Leave Queue", href: "/admin/leave-approvals" },
+      { label: "Reports", href: "/admin/reports" },
+    ],
+  },
+];
+
+export function getNavigationGroupsForRole(role: AppRole) {
+  return navigationGroups
+    .map((group) => ({
+      ...group,
+      links: group.links.filter((link) => canAccessRoute(role, link.href)),
+    }))
+    .filter((group) => group.links.length > 0);
+}

@@ -1,0 +1,15 @@
+work_email,schedule_name,timezone,shift_start,shift_end,day_off,effective_from,effective_to,is_primary,grace_period_minutes,expected_minutes_per_day
+richelle@tytanteams.com,9:00 PM - 6:00 AM MLA,Asia/Manila,21:00,06:00,,2026-01-01,,true,0,540
+blando@tytanteams.com,9:00 PM - 5:00 AM MLA,Asia/Manila,21:00,05:00,,2026-01-01,,true,0,480
+johnnel@tytanteams.com,9:00 PM - 5:00 AM MLA,Asia/Manila,21:00,05:00,,2026-01-01,,true,0,480
+aira@tytanteams.com,9:00 PM - 5:00 AM MLA,Asia/Manila,21:00,05:00,,2026-01-01,,true,0,480
+monique@tytanteams.com,9:00 PM - 6:00 AM MLA,Asia/Manila,21:00,06:00,,2026-01-01,,true,0,540
+maria@tytanteams.com,10:00 PM - 6:00 AM MLA,Asia/Manila,22:00,06:00,,2026-01-01,,true,0,480
+zenah@tytanteams.com,9:00 PM - 6:00 AM MLA,Asia/Manila,21:00,06:00,,2026-01-01,,true,0,540
+lysan@tytanteams.com,9:00 PM - 5:00 AM MLA,Asia/Manila,21:00,05:00,,2026-01-01,,true,0,480
+laarnie@tytanteams.com,11:00 PM - 7:00 AM MLA,Asia/Manila,23:00,07:00,,2026-01-01,,true,0,480
+christine@tytanteams.com,9:00 PM - 5:00 AM MLA,Asia/Manila,21:00,05:00,,2026-01-01,,true,0,480
+bong@tytanteams.com,9:00 PM - 5:00 AM MLA,Asia/Manila,21:00,05:00,,2026-01-01,,true,0,480
+aliza@tytanteams.com,9:00 PM - 5:00 AM MLA,Asia/Manila,21:00,05:00,,2026-01-01,,true,0,480
+elijah@tytanteams.com,10:00 PM - 6:00 AM MLA,Asia/Manila,22:00,06:00,,2026-01-01,,true,0,480
+alida@tytanteams.com,9:00 PM - 5:00 AM MLA,Asia/Manila,21:00,05:00,,2026-01-01,,true,0,480

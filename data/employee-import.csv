@@ -1,0 +1,15 @@
+employee_number,full_name,work_email,personal_email,department,job_title,company,manager_work_email,employment_status,hire_date,end_date,timezone
+,Richelle Feliz Manahan,richelle@tytanteams.com,richellefeliz@gmail.com,People & Culture,Director of People and Culture,TYTAN,,active,2021-04-01,,Asia/Manila
+,Blando Baldomero Natividad,blando@tytanteams.com,daboy.natividad01@gmail.com,Client Success & Strategic Accounts,Client Success Supervisor,TYTAN,,active,2021-10-04,,Asia/Manila
+,Johnnel Lamigo,johnnel@tytanteams.com,ljohnnel@gmail.com,Operations & Enablement,Operations Manager,TYTAN,,active,2022-08-08,,Asia/Manila
+,Aira Kris Asuncion,aira@tytanteams.com,airaasuncion28@gmail.com,Creatives Department,Marketing and Creative Supervisor,TYTAN,,active,2022-07-01,,Asia/Manila
+,Monique Sariego,monique@tytanteams.com,moniquesariego28@gmail.com,People & Culture,Talent Operations & Organizational Development,TYTAN,richelle@tytanteams.com,active,2023-04-25,,Asia/Manila
+,Maria Marina Alayon,maria@tytanteams.com,inamontero90@gmail.com,Operations & Enablement,Learning and Development,TYTAN,johnnel@tytanteams.com,active,2023-05-01,,Asia/Manila
+,Zenah Smalley,zenah@tytanteams.com,zenahsmalleyy@gmail.com,Business Development & Revenue,Revenue Operations & Growth Analytics Analyst II,TYTAN,,active,2023-08-14,,Asia/Manila
+,Lysan Camille Simbulan,lysan@tytanteams.com,tapiadorlysancamillef@gmail.com,Business Development & Revenue,"Business Development Representative II, Strategic Growth & Revenue Lead",TYTAN,,active,2024-03-18,,Asia/Manila
+,Laarnie Ivy Pascua,laarnie@tytanteams.com,laarnieivy@gmail.com,Operations & Enablement,Project Enablement & Operations,TYTAN,johnnel@tytanteams.com,active,2024-06-18,,Asia/Manila
+,Christine Go,christine@tytanteams.com,christinebolanos15@gmail.com,Business Development & Revenue,"Business Development Representative I,Growth & Outreach Support",TYTAN,,active,2024-09-30,,Asia/Manila
+,Geminiano Jr. De Guzman,bong@tytanteams.com,bongdeg10@gmail.com,Creatives Department,Creative/Design,TYTAN,aira@tytanteams.com,active,2024-11-18,,Asia/Manila
+,Aliza Divine Torres,aliza@tytanteams.com,lzdvntorres@gmail.com,Creatives Department,Creative/Design,TYTAN,aira@tytanteams.com,active,2025-03-24,,Asia/Manila
+,Elijah Jake Sagpang,elijah@tytanteams.com,ejssagpang@gmail.com,Operations & Enablement,"Systems, Automaton & App Development",TYTAN,johnnel@tytanteams.com,active,2025-03-24,,Asia/Manila
+,Alida Mae Feliciano,alida@tytanteams.com,felicianoalidamae@gmail.com,People & Culture,Finance Operations & Organizational Development,TYTAN,richelle@tytanteams.com,active,2025-04-21,,Asia/Manila

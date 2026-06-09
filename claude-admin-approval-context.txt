@@ -1,0 +1,1112 @@
+===== src/lib/leave/actions.ts =====
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { getCurrentUserProfile } from "@/lib/auth/session";
+import { createClient } from "@/lib/supabase/server";
+import type { LeavePolicyType, LeaveRequestStatus } from "@/types/leave";
+
+const ADMIN_LEAVE_TYPES_PATH = "/admin/leave-types";
+const ADMIN_LEAVE_POLICIES_PATH = "/admin/leave-policies";
+const ADMIN_LEAVE_BALANCES_PATH = "/admin/leave-balances";
+const EMPLOYEE_LEAVE_PATH = "/employee/leave";
+const EMPLOYEE_NEW_LEAVE_PATH = "/employee/leave/new";
+const MANAGER_LEAVE_APPROVALS_PATH = "/manager/leave-approvals";
+
+const LEAVE_POLICY_TYPES: LeavePolicyType[] = [
+  "accrued",
+  "fixed",
+  "unlimited",
+  "unpaid",
+];
+const EMPLOYEE_FILED_LEAVE_TYPE_NAMES = [
+  "Sick Leave",
+  "Vacation Leave",
+  "Emergency Leave",
+  "Floating Leave",
+];
+
+export async function createLeaveTypeAction(formData: FormData) {
+  const name = readRequiredText(formData, "name");
+  const description = readOptionalText(formData, "description");
+  const policyType = readLeavePolicyType(formData);
+
+  if (!name) {
+    redirectWithStatus(ADMIN_LEAVE_TYPES_PATH, "error", "missing-name");
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("leave_types").insert({
+    name,
+    description,
+    policy_type: policyType,
+    is_paid: formData.getAll("is_paid").includes("true"),
+    requires_approval: formData.getAll("requires_approval").includes("true"),
+    is_active: true,
+  });
+
+  if (error) {
+    redirectWithStatus(ADMIN_LEAVE_TYPES_PATH, "error", "create-failed");
+  }
+
+  revalidatePath(ADMIN_LEAVE_TYPES_PATH);
+  redirectWithStatus(ADMIN_LEAVE_TYPES_PATH, "success", "created");
+}
+
+export async function createLeavePolicyAction(formData: FormData) {
+  const leaveTypeId = readRequiredText(formData, "leave_type_id");
+  const name = readRequiredText(formData, "name");
+  const effectiveFrom = readRequiredText(formData, "effective_from");
+  const effectiveTo = readOptionalText(formData, "effective_to");
+
+  if (!leaveTypeId || !name || !effectiveFrom) {
+    redirectWithStatus(ADMIN_LEAVE_POLICIES_PATH, "error", "missing-policy");
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("leave_policies").insert({
+    leave_type_id: leaveTypeId,
+    name,
+    annual_credit: readNumberOrNull(formData, "annual_credit"),
+    monthly_accrual: readNumberOrNull(formData, "monthly_accrual"),
+    carryover_allowed: formData.getAll("carryover_allowed").includes("true"),
+    max_carryover: readNumberOrNull(formData, "max_carryover"),
+    effective_from: effectiveFrom,
+    effective_to: effectiveTo,
+    is_active: true,
+  });
+
+  if (error) {
+    redirectWithStatus(ADMIN_LEAVE_POLICIES_PATH, "error", "create-failed");
+  }
+
+  revalidatePath(ADMIN_LEAVE_POLICIES_PATH);
+  redirectWithStatus(ADMIN_LEAVE_POLICIES_PATH, "success", "created");
+}
+
+export async function upsertLeaveBalanceAction(formData: FormData) {
+  const employeeId = readRequiredText(formData, "employee_id");
+  const leaveTypeId = readRequiredText(formData, "leave_type_id");
+  const year = readInteger(formData, "year");
+
+  if (!employeeId || !leaveTypeId || !year) {
+    redirectWithStatus(ADMIN_LEAVE_BALANCES_PATH, "error", "missing-balance");
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("leave_balances").upsert(
+    {
+      employee_id: employeeId,
+      leave_type_id: leaveTypeId,
+      year,
+      balance: readNumber(formData, "balance"),
+      used: readNumber(formData, "used"),
+      pending: readNumber(formData, "pending"),
+    },
+    { onConflict: "employee_id,leave_type_id,year" },
+  );
+
+  if (error) {
+    redirectWithStatus(ADMIN_LEAVE_BALANCES_PATH, "error", "save-failed");
+  }
+
+  revalidatePath(ADMIN_LEAVE_BALANCES_PATH);
+  redirectWithStatus(ADMIN_LEAVE_BALANCES_PATH, "success", "saved");
+}
+
+export async function submitLeaveRequestAction(formData: FormData) {
+  const employee = await getCurrentEmployee();
+  const leaveTypeId = readRequiredText(formData, "leave_type_id");
+  const startDate = readRequiredText(formData, "start_date");
+  const endDate = readRequiredText(formData, "end_date");
+  const requestedHours = readNumber(formData, "requested_hours");
+  const reason = readOptionalText(formData, "reason");
+
+  if (!employee || !leaveTypeId || !startDate || !endDate || requestedHours <= 0) {
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "missing-request");
+  }
+
+  const supabase = await createClient();
+  const { data: leaveType, error: leaveTypeError } = await supabase
+    .from("leave_types")
+    .select("name,is_active")
+    .eq("id", leaveTypeId)
+    .maybeSingle();
+
+  if (
+    leaveTypeError ||
+    !leaveType?.is_active ||
+    !EMPLOYEE_FILED_LEAVE_TYPE_NAMES.includes(leaveType.name)
+  ) {
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "invalid-leave-type");
+  }
+
+  const { error } = await supabase.from("leave_requests").insert({
+    employee_id: employee.id,
+    leave_type_id: leaveTypeId,
+    start_date: startDate,
+    end_date: endDate,
+    total_hours: requestedHours,
+    reason,
+    status: "pending_supervisor",
+  });
+
+  if (error) {
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
+  }
+
+  revalidatePath(EMPLOYEE_LEAVE_PATH);
+  redirectWithStatus(EMPLOYEE_LEAVE_PATH, "success", "submitted");
+}
+
+export async function reviewLeaveRequestAction(formData: FormData) {
+  const requestId = readRequiredText(formData, "request_id");
+  const decision = readRequiredText(formData, "decision");
+
+  if (!requestId || !decision) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "missing-review");
+  }
+
+  const reviewer = await getCurrentEmployee();
+
+  if (!reviewer) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "review-not-authorized");
+  }
+
+  const supabase = await createClient();
+  const { data: request, error: requestError } = await supabase
+    .from("leave_requests")
+    .select("id,status")
+    .eq("id", requestId)
+    .maybeSingle();
+
+  if (requestError || !request) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "request-not-found");
+  }
+
+  const currentStatus = request.status as LeaveRequestStatus;
+  let updateValues: Record<string, string> | null = null;
+
+  if (decision === "supervisor_approve") {
+    if (currentStatus !== "pending_supervisor") {
+      redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "wrong-status");
+    }
+
+    updateValues = {
+      status: "pending_admin",
+      supervisorapprovedat: new Date().toISOString(),
+      supervisorapprovedby: reviewer.id,
+    };
+  } else if (decision === "admin_approve") {
+    if (currentStatus !== "pending_admin" || reviewer.role !== "admin") {
+      redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "wrong-status");
+    }
+
+    updateValues = {
+      status: "approved",
+      adminapprovedat: new Date().toISOString(),
+      adminapprovedby: reviewer.id,
+    };
+  } else if (decision === "reject") {
+    if (
+      currentStatus !== "pending_supervisor" &&
+      currentStatus !== "pending_admin"
+    ) {
+      redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "wrong-status");
+    }
+
+    updateValues = {
+      status: "rejected",
+    };
+  }
+
+  if (!updateValues) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "missing-review");
+  }
+
+  const { error } = await supabase
+    .from("leave_requests")
+    .update(updateValues)
+    .eq("id", requestId);
+
+  if (error) {
+    redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "error", "review-failed");
+  }
+
+  revalidatePath(MANAGER_LEAVE_APPROVALS_PATH);
+  revalidatePath(EMPLOYEE_LEAVE_PATH);
+  redirectWithStatus(MANAGER_LEAVE_APPROVALS_PATH, "success", "reviewed");
+}
+
+export async function deleteLeaveRequestAction(formData: FormData) {
+  const requestId = readRequiredText(formData, "request_id");
+  const returnPath = readLeaveReturnPath(formData);
+  const actor = await getCurrentEmployee();
+
+  if (!requestId || !actor) {
+    redirectWithStatus(returnPath, "error", "missing-delete");
+  }
+
+  const supabase = await createClient();
+  const { data: request, error: requestError } = await supabase
+    .from("leave_requests")
+    .select("id,employee_id,status")
+    .eq("id", requestId)
+    .maybeSingle();
+
+  if (requestError || !request) {
+    redirectWithStatus(returnPath, "error", "request-not-found");
+  }
+
+  const ownsRequest = request.employee_id === actor.id;
+  const canDelete = actor.role === "admin" || ownsRequest;
+
+  if (!canDelete || request.status === "deleted") {
+    redirectWithStatus(returnPath, "error", "delete-not-authorized");
+  }
+
+  const { error } = await supabase
+    .from("leave_requests")
+    .update({
+      status: "deleted",
+      deletedat: new Date().toISOString(),
+      deletedby: actor.id,
+    })
+    .eq("id", requestId);
+
+  if (error) {
+    redirectWithStatus(returnPath, "error", "delete-failed");
+  }
+
+  revalidateLeavePages();
+  redirectWithStatus(returnPath, "success", "deleted");
+}
+
+async function getCurrentEmployee() {
+  const profile = await getCurrentUserProfile();
+
+  if (!profile) {
+    return null;
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("employees")
+    .select("id,full_name,work_email")
+    .eq("profile_id", profile.id)
+    .maybeSingle();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return {
+    ...(data as { id: string; full_name: string; work_email: string }),
+    role: profile.role,
+  };
+}
+
+function revalidateLeavePages() {
+  revalidatePath(EMPLOYEE_LEAVE_PATH);
+  revalidatePath(MANAGER_LEAVE_APPROVALS_PATH);
+  revalidatePath(ADMIN_LEAVE_BALANCES_PATH);
+}
+
+function readLeaveReturnPath(formData: FormData) {
+  const value = readRequiredText(formData, "return_to");
+
+  if (value === MANAGER_LEAVE_APPROVALS_PATH) {
+    return MANAGER_LEAVE_APPROVALS_PATH;
+  }
+
+  return EMPLOYEE_LEAVE_PATH;
+}
+
+function readRequiredText(formData: FormData, key: string) {
+  return String(formData.get(key) ?? "").trim();
+}
+
+function readOptionalText(formData: FormData, key: string) {
+  const value = readRequiredText(formData, key);
+  return value.length > 0 ? value : null;
+}
+
+function readLeavePolicyType(formData: FormData): LeavePolicyType {
+  const value = readRequiredText(formData, "policy_type");
+
+  if (LEAVE_POLICY_TYPES.includes(value as LeavePolicyType)) {
+    return value as LeavePolicyType;
+  }
+
+  return "fixed";
+}
+
+function readNumber(formData: FormData, key: string) {
+  const value = Number.parseFloat(readRequiredText(formData, key));
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function readNumberOrNull(formData: FormData, key: string) {
+  const rawValue = readRequiredText(formData, key);
+
+  if (!rawValue) {
+    return null;
+  }
+
+  const value = Number.parseFloat(rawValue);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function readInteger(formData: FormData, key: string) {
+  const value = Number.parseInt(readRequiredText(formData, key), 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function redirectWithStatus(
+  path: string,
+  status: "success" | "error",
+  message: string,
+): never {
+  redirect(`${path}?${status}=${message}`);
+}
+
+
+===== src/types/leave.ts =====
+export type LeavePolicyType = "accrued" | "fixed" | "unlimited" | "unpaid";
+
+export type LeaveRequestStatus =
+  | "pending_supervisor"
+  | "pending_admin"
+  | "approved"
+  | "rejected"
+  | "deleted";
+
+export type LeaveProcessingStatus =
+  | "notprocessed"
+  | "processed"
+  | "partiallyunpaid"
+  | "fullyunpaid"
+  | "skipped";
+
+export type LeaveTransactionType =
+  | "credit"
+  | "deduction"
+  | "adjustment"
+  | "reversal";
+
+export type LeaveDeductionStatus =
+  | "not_deducted"
+  | "deducted"
+  | "partially_unpaid"
+  | "fully_unpaid"
+  | "reversal_needed";
+
+export type LeaveReversalStatus =
+  | "not_reversed"
+  | "reversed"
+  | "reversal_not_required";
+
+export type LeaveType = {
+  id: string;
+  name: string;
+  description: string | null;
+  policyType: LeavePolicyType;
+  isPaid: boolean;
+  requiresApproval: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LeavePolicy = {
+  id: string;
+  leaveTypeId: string;
+  name: string;
+  annualCredit: number | null;
+  monthlyAccrual: number | null;
+  carryoverAllowed: boolean;
+  maxCarryover: number | null;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LeaveBalance = {
+  id: string;
+  employeeId: string;
+  leaveTypeId: string;
+  balance: number;
+  used: number;
+  pending: number;
+  year: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LeaveRequest = {
+  id: string;
+  employeeId: string;
+  leaveTypeId: string;
+  startDate: string;
+  endDate: string;
+  totalHours: number;
+  paidHours: number;
+  unpaidHours: number;
+  deductionStatus: LeaveDeductionStatus;
+  deductionNotes: string | null;
+  reason: string | null;
+  status: LeaveRequestStatus;
+  submittedAt: string;
+  supervisorApprovedAt: string | null;
+  supervisorApprovedBy: string | null;
+  adminApprovedAt: string | null;
+  adminApprovedBy: string | null;
+  deletedAt: string | null;
+  deletedBy: string | null;
+  processedAt: string | null;
+  processingStatus: LeaveProcessingStatus;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewNotes: string | null;
+  cancelledAt: string | null;
+  cancelledBy: string | null;
+  cancellationReason: string | null;
+  reversalStatus: LeaveReversalStatus;
+  reversedAt: string | null;
+  reversedBy: string | null;
+  reversalNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LeaveTransaction = {
+  id: string;
+  employeeId: string;
+  leaveTypeId: string;
+  leaveRequestId: string | null;
+  relatedTransactionId: string | null;
+  transactionType: LeaveTransactionType;
+  amount: number;
+  balanceAfter: number | null;
+  notes: string | null;
+  createdBy: string | null;
+  createdAt: string;
+};
+
+
+===== src/app/manager/leave-approvals/page.tsx =====
+import { getCurrentUserProfile } from "@/lib/auth/session";
+import {
+  deleteLeaveRequestAction,
+  reviewLeaveRequestAction,
+} from "@/lib/leave/actions";
+import { createClient } from "@/lib/supabase/server";
+import type { LeaveProcessingStatus, LeaveRequestStatus } from "@/types/leave";
+
+type PageProps = {
+  searchParams: Promise<{ success?: string; error?: string }>;
+};
+
+type EmployeeRow = {
+  id: string;
+  full_name: string;
+  work_email: string;
+};
+
+type LeaveTypeRow = {
+  id: string;
+  name: string;
+};
+
+type LeaveRequestRow = {
+  id: string;
+  employee_id: string;
+  leave_type_id: string;
+  start_date: string;
+  end_date: string;
+  total_hours: number;
+  reason: string | null;
+  status: LeaveRequestStatus;
+  submitted_at: string;
+  supervisorapprovedat: string | null;
+  adminapprovedat: string | null;
+  deletedat: string | null;
+  processedat: string | null;
+  processingstatus: LeaveProcessingStatus;
+};
+
+export default async function LeaveApprovalsPage({ searchParams }: PageProps) {
+  const params = await searchParams;
+  const profile = await getCurrentUserProfile();
+  const isAdmin = profile?.role === "admin";
+  const supabase = await createClient();
+  const [{ data: requestData, error }, { data: employeeData }, { data: typeData }] =
+    await Promise.all([
+      supabase
+        .from("leave_requests")
+        .select("id,employee_id,leave_type_id,start_date,end_date,total_hours,reason,status,submitted_at,supervisorapprovedat,adminapprovedat,deletedat,processedat,processingstatus")
+        .neq("status", "deleted")
+        .order("submitted_at", { ascending: true }),
+      supabase
+        .from("employees")
+        .select("id,full_name,work_email")
+        .order("full_name", { ascending: true }),
+      supabase.from("leave_types").select("id,name").order("name"),
+    ]);
+  const requests = (requestData ?? []) as LeaveRequestRow[];
+  const employees = (employeeData ?? []) as EmployeeRow[];
+  const leaveTypes = (typeData ?? []) as LeaveTypeRow[];
+  const employeeNames = new Map(
+    employees.map((employee) => [
+      employee.id,
+      `${employee.full_name} (${employee.work_email})`,
+    ]),
+  );
+  const typeNames = new Map(leaveTypes.map((type) => [type.id, type.name]));
+
+  return (
+    <div className="grid gap-6">
+      <header className="rounded-lg bg-[#001f4d] p-6 text-white">
+        <p className="text-xs font-bold uppercase text-[#f2d300]">
+          Manager workflow
+        </p>
+        <h1 className="mt-2 text-2xl font-bold tracking-normal">
+          Leave Approvals
+        </h1>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-white/80">
+          Leave now follows a simple supervisor then admin approval flow.
+          Approval does not deduct balances, and no approval notes are required.
+        </p>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-white/80">
+          Employees and admins use soft delete for leave applications. Balance
+          processing will happen later after the leave date passes.
+        </p>
+      </header>
+
+      <StatusMessage success={params.success} error={params.error ?? error?.message} />
+
+      <section className="rounded-lg border border-zinc-200 bg-white shadow-sm">
+        <div className="border-b border-zinc-200 px-5 py-4">
+          <h2 className="text-base font-semibold text-zinc-950">
+            Leave requests
+          </h2>
+        </div>
+        {requests.length === 0 ? (
+          <p className="px-5 py-8 text-sm text-zinc-600">
+            No leave requests are available for your review.
+          </p>
+        ) : (
+          <div className="grid gap-4 p-5">
+            {requests.map((request) => (
+              <article
+                key={request.id}
+                className="rounded-lg border border-zinc-200 p-4"
+              >
+                <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr_1fr]">
+                  <div>
+                    <p className="font-semibold text-zinc-950">
+                      {employeeNames.get(request.employee_id) ?? "Employee"}
+                    </p>
+                    <p className="mt-1 text-sm text-zinc-600">
+                      {typeNames.get(request.leave_type_id) ?? "Leave"} -{" "}
+                      {formatHours(request.total_hours)}
+                    </p>
+                    <p className="mt-2 text-xs leading-5 text-zinc-500">
+                      Status {formatLabel(request.status)} - Processing{" "}
+                      {formatLabel(request.processingstatus)}
+                    </p>
+                    <WorkflowDetails request={request} />
+                  </div>
+                  <p className="text-sm text-zinc-600">
+                    {request.start_date} to {request.end_date}
+                  </p>
+                  <p className="text-sm text-zinc-600">
+                    {request.reason || "No reason provided"}
+                  </p>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  {request.status === "pending_supervisor" ? (
+                    <>
+                      <ReviewButton
+                        requestId={request.id}
+                        decision="supervisor_approve"
+                        label="Supervisor approve"
+                        primary
+                      />
+                      <ReviewButton
+                        requestId={request.id}
+                        decision="reject"
+                        label="Reject"
+                      />
+                    </>
+                  ) : null}
+                  {request.status === "pending_admin" && isAdmin ? (
+                    <>
+                      <ReviewButton
+                        requestId={request.id}
+                        decision="admin_approve"
+                        label="Admin approve"
+                        primary
+                      />
+                      <ReviewButton
+                        requestId={request.id}
+                        decision="reject"
+                        label="Reject"
+                      />
+                    </>
+                  ) : null}
+                  {request.status === "pending_admin" && !isAdmin ? (
+                    <p className="text-sm text-zinc-600">
+                      Waiting for admin approval.
+                    </p>
+                  ) : null}
+                  {isAdmin ? (
+                    <form action={deleteLeaveRequestAction}>
+                      <input
+                        type="hidden"
+                        name="request_id"
+                        value={request.id}
+                      />
+                      <input
+                        type="hidden"
+                        name="return_to"
+                        value="/manager/leave-approvals"
+                      />
+                      <button className="h-10 rounded-lg border border-zinc-300 px-4 text-sm font-bold text-zinc-700">
+                        Delete
+                      </button>
+                    </form>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ReviewButton({
+  requestId,
+  decision,
+  label,
+  primary,
+}: {
+  requestId: string;
+  decision: "supervisor_approve" | "admin_approve" | "reject";
+  label: string;
+  primary?: boolean;
+}) {
+  return (
+    <form action={reviewLeaveRequestAction}>
+      <input type="hidden" name="request_id" value={requestId} />
+      <button
+        name="decision"
+        value={decision}
+        className={
+          primary
+            ? "h-10 rounded-lg bg-[#f2d300] px-4 text-sm font-bold text-[#001f4d]"
+            : "h-10 rounded-lg border border-zinc-300 px-4 text-sm font-bold text-zinc-700"
+        }
+      >
+        {label}
+      </button>
+    </form>
+  );
+}
+
+function StatusMessage({ success, error }: { success?: string; error?: string }) {
+  if (!success && !error) return null;
+  return (
+    <p className={`rounded-lg border px-4 py-3 text-sm ${error ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
+      {error ? getErrorMessage(error) : getSuccessMessage(success)}
+    </p>
+  );
+}
+
+function formatHours(value: number) {
+  return `${value} hrs`;
+}
+
+function formatLabel(value: string) {
+  return value
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function WorkflowDetails({ request }: { request: LeaveRequestRow }) {
+  const details = [
+    request.supervisorapprovedat
+      ? `Supervisor approved ${request.supervisorapprovedat}`
+      : null,
+    request.adminapprovedat ? `Admin approved ${request.adminapprovedat}` : null,
+    request.processedat ? `Processed ${request.processedat}` : null,
+  ].filter(Boolean);
+
+  if (details.length === 0) return null;
+
+  return (
+    <div className="mt-2 grid gap-1 text-xs text-zinc-500">
+      {details.map((detail) => (
+        <span key={detail}>{detail}</span>
+      ))}
+    </div>
+  );
+}
+
+function getSuccessMessage(success: string | undefined) {
+  switch (success) {
+    case "deleted":
+      return "Leave request deleted.";
+    case "reviewed":
+    default:
+      return "Review saved.";
+  }
+}
+
+function getErrorMessage(error: string) {
+  switch (error) {
+    case "review-not-authorized":
+      return "You can only review leave requests in your scope.";
+    case "request-not-found":
+      return "That leave request could not be found.";
+    case "wrong-status":
+      return "That request is not in the expected approval step.";
+    case "delete-not-authorized":
+      return "Only admins can delete requests from this view.";
+    case "delete-failed":
+      return "That request could not be deleted.";
+    default:
+      return "That review could not be saved.";
+  }
+}
+
+
+===== src/app/admin/leave-balances/page.tsx =====
+import { upsertLeaveBalanceAction } from "@/lib/leave/actions";
+import { createClient } from "@/lib/supabase/server";
+
+type PageProps = {
+  searchParams: Promise<{ success?: string; error?: string }>;
+};
+
+type EmployeeRow = {
+  id: string;
+  full_name: string;
+  work_email: string;
+  employment_status: string;
+};
+
+type LeaveTypeRow = {
+  id: string;
+  name: string;
+  is_active: boolean;
+};
+
+type LeaveBalanceRow = {
+  id: string;
+  employee_id: string;
+  leave_type_id: string;
+  year: number;
+  balance: number;
+  used: number;
+  pending: number;
+};
+
+export default async function AdminLeaveBalancesPage({ searchParams }: PageProps) {
+  const params = await searchParams;
+  const supabase = await createClient();
+  const [
+    { data: balanceData, error },
+    { data: employeeData },
+    { data: typeData },
+  ] = await Promise.all([
+    supabase
+      .from("leave_balances")
+      .select("id,employee_id,leave_type_id,year,balance,used,pending")
+      .order("year", { ascending: false }),
+    supabase
+      .from("employees")
+      .select("id,full_name,work_email,employment_status")
+      .order("full_name", { ascending: true }),
+    supabase
+      .from("leave_types")
+      .select("id,name,is_active")
+      .order("name", { ascending: true }),
+  ]);
+  const balances = (balanceData ?? []) as LeaveBalanceRow[];
+  const employees = (employeeData ?? []) as EmployeeRow[];
+  const leaveTypes = (typeData ?? []) as LeaveTypeRow[];
+  const employeeNames = new Map(
+    employees.map((employee) => [
+      employee.id,
+      `${employee.full_name} (${employee.work_email})`,
+    ]),
+  );
+  const typeNames = new Map(leaveTypes.map((type) => [type.id, type.name]));
+
+  return (
+    <div className="grid gap-6">
+      <PageHeader
+        title="Leave Balances"
+        description="Enter the 2026 baseline from the Tytan leave monitoring reference. Balances are tracked in hours."
+      />
+      <StatusMessage success={params.success} error={params.error ?? error?.message} />
+
+      <section className="rounded-lg border border-[#efe6b6] bg-[#fffdf2] p-5 text-sm text-zinc-700">
+        <h2 className="font-semibold text-[#001f4d]">Baseline reminder</h2>
+        <p className="mt-2 leading-6">
+          The 2026 screenshot already includes June accrual. Do not recalculate
+          from scratch. Next monthly accrual should happen on July 1. Use this
+          page for manual baseline entry until spreadsheet import and automation
+          are approved. Emergency Leave may have 0 direct baseline hours but
+          still remains fileable. Simple Leave V1 approval does not deduct
+          hours; paid/unpaid handling, accrued-hours usage, and post-date
+          processing will be added in a later phase. Floating Leave stays
+          separate from monthly accrued leave.
+        </p>
+      </section>
+
+      <section className="grid gap-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
+        <div>
+          <h2 className="text-base font-semibold text-[#001f4d]">
+            Create or update balance
+          </h2>
+          <p className="mt-1 text-sm text-zinc-600">
+            Saving uses employee, leave type, and year as the unique baseline
+            key.
+          </p>
+        </div>
+        <form action={upsertLeaveBalanceAction} className="grid gap-4 lg:grid-cols-3">
+          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+            Employee
+            <select name="employee_id" required className={fieldClassName}>
+              <option value="">Choose employee</option>
+              {employees.map((employee) => (
+                <option key={employee.id} value={employee.id}>
+                  {employee.full_name} ({employee.work_email})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+            Leave type
+            <select name="leave_type_id" required className={fieldClassName}>
+              <option value="">Choose leave type</option>
+              {leaveTypes
+                .filter((type) => type.is_active)
+                .map((type) => (
+                  <option key={type.id} value={type.id}>
+                    {type.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <FormField label="Year" name="year" type="number" defaultValue="2026" required />
+          <FormField label="Balance hours" name="balance" type="number" step="0.25" required />
+          <FormField label="Used hours" name="used" type="number" step="0.25" defaultValue="0" required />
+          <FormField label="Pending hours" name="pending" type="number" step="0.25" defaultValue="0" required />
+          <div className="lg:col-span-3">
+            <button className="h-11 rounded-lg bg-[#f2d300] px-4 text-sm font-bold text-[#001f4d]">
+              Save balance
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section className="rounded-lg border border-zinc-200 bg-white shadow-sm">
+        <TableHeader title="Balance list" />
+        {balances.length === 0 ? (
+          <EmptyState message="No leave balances have been configured yet." />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-[#fffdf2] text-xs uppercase text-zinc-500">
+                <tr>
+                  <th className="px-5 py-3">Employee</th>
+                  <th className="px-5 py-3">Leave type</th>
+                  <th className="px-5 py-3">Year</th>
+                  <th className="px-5 py-3">Balance</th>
+                  <th className="px-5 py-3">Used</th>
+                  <th className="px-5 py-3">Pending</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100">
+                {balances.map((balance) => (
+                  <tr key={balance.id}>
+                    <td className="px-5 py-4 font-medium text-zinc-950">
+                      {employeeNames.get(balance.employee_id) ?? "Unknown"}
+                    </td>
+                    <td className="px-5 py-4 text-zinc-600">
+                      {typeNames.get(balance.leave_type_id) ?? "Unknown"}
+                    </td>
+                    <td className="px-5 py-4 text-zinc-600">{balance.year}</td>
+                    <td className="px-5 py-4 text-zinc-600">
+                      {formatHours(balance.balance)}
+                    </td>
+                    <td className="px-5 py-4 text-zinc-600">
+                      {formatHours(balance.used)}
+                    </td>
+                    <td className="px-5 py-4 text-zinc-600">
+                      {formatHours(balance.pending)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+const fieldClassName =
+  "h-11 rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30";
+
+function PageHeader({ title, description }: { title: string; description: string }) {
+  return (
+    <header className="rounded-lg bg-[#001f4d] p-6 text-white">
+      <p className="text-xs font-bold uppercase text-[#f2d300]">Leave management</p>
+      <h1 className="mt-2 text-2xl font-bold tracking-normal">{title}</h1>
+      <p className="mt-2 max-w-3xl text-sm leading-6 text-white/80">{description}</p>
+    </header>
+  );
+}
+
+function FormField({
+  label,
+  name,
+  type = "text",
+  defaultValue,
+  required,
+  step,
+}: {
+  label: string;
+  name: string;
+  type?: string;
+  defaultValue?: string;
+  required?: boolean;
+  step?: string;
+}) {
+  return (
+    <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+      {label}
+      <input
+        name={name}
+        type={type}
+        defaultValue={defaultValue}
+        required={required}
+        step={step}
+        className={fieldClassName}
+      />
+    </label>
+  );
+}
+
+function TableHeader({ title }: { title: string }) {
+  return (
+    <div className="border-b border-zinc-200 px-5 py-4">
+      <h2 className="text-base font-semibold text-zinc-950">{title}</h2>
+    </div>
+  );
+}
+
+function StatusMessage({ success, error }: { success?: string; error?: string }) {
+  if (!success && !error) return null;
+  return (
+    <p className={`rounded-lg border px-4 py-3 text-sm ${error ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
+      {error ? "That change could not be saved." : "Saved."}
+    </p>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return <p className="px-5 py-8 text-sm text-zinc-600">{message}</p>;
+}
+
+function formatHours(value: number) {
+  return `${value} hrs`;
+}
+
+
+===== src/lib/navigation.ts =====
+import { canAccessRoute } from "@/lib/auth/permissions";
+import type { AppRole } from "@/types/auth";
+
+export type NavigationLink = {
+  label: string;
+  href: string;
+};
+
+export type NavigationGroup = {
+  title: string;
+  links: NavigationLink[];
+};
+
+export const navigationGroups: NavigationGroup[] = [
+  {
+    title: "Employee",
+    links: [
+      { label: "Employee Home", href: "/employee" },
+      { label: "Clock", href: "/employee/clock" },
+      { label: "Leave", href: "/employee/leave" },
+      { label: "New Leave", href: "/employee/leave/new" },
+      { label: "Attendance", href: "/employee/attendance" },
+      { label: "Schedule", href: "/employee/schedule" },
+    ],
+  },
+  {
+    title: "Manager",
+    links: [
+      { label: "Manager Home", href: "/manager" },
+      { label: "Team Attendance", href: "/manager/team-attendance" },
+      { label: "Leave Approvals", href: "/manager/leave-approvals" },
+      { label: "Time Adjustments", href: "/manager/time-adjustments" },
+      { label: "Reports", href: "/manager/reports" },
+    ],
+  },
+  {
+    title: "Admin",
+    links: [
+      { label: "Admin Home", href: "/admin" },
+      { label: "Employees", href: "/admin/employees" },
+      { label: "Departments", href: "/admin/departments" },
+      { label: "Roles", href: "/admin/roles" },
+      { label: "Schedules", href: "/admin/schedules" },
+      { label: "Leave Types", href: "/admin/leave-types" },
+      { label: "Leave Policies", href: "/admin/leave-policies" },
+      { label: "Leave Balances", href: "/admin/leave-balances" },
+      { label: "Reports", href: "/admin/reports" },
+      { label: "Settings", href: "/admin/settings" },
+    ],
+  },
+];
+
+export function getNavigationGroupsForRole(role: AppRole) {
+  return navigationGroups
+    .map((group) => ({
+      ...group,
+      links: group.links.filter((link) => canAccessRoute(role, link.href)),
+    }))
+    .filter((group) => group.links.length > 0);
+}
+
+
+===== src/app/admin files =====
+src/app/admin/departments/page.tsx
+src/app/admin/employees/page.tsx
+src/app/admin/layout.tsx
+src/app/admin/leave-balances/page.tsx
+src/app/admin/leave-policies/page.tsx
+src/app/admin/leave-types/page.tsx
+src/app/admin/page.tsx
+src/app/admin/reports/page.tsx
+src/app/admin/roles/page.tsx
+src/app/admin/schedules/page.tsx
+src/app/admin/settings/page.tsx
