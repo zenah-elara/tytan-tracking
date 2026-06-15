@@ -14,21 +14,21 @@ type PlaceholderPageProps = {
 
 const defaultCards: NonNullable<PlaceholderPageProps["cards"]> = [
   {
-    label: "Module",
-    value: "Setup",
-    detail: "Available",
+    label: "Status",
+    value: "Planned",
+    detail: "V1 foundation is ready.",
     tone: "amber",
   },
   {
-    label: "Scope",
-    value: "Role",
-    detail: "Protected",
+    label: "Access",
+    value: "Protected",
+    detail: "Role-aware route access is active.",
     tone: "zinc",
   },
   {
-    label: "Next",
-    value: "Review",
-    detail: "Confirm workflow",
+    label: "Next step",
+    value: "Build",
+    detail: "Module workflow comes in a later phase.",
     tone: "emerald",
   },
 ];
@@ -40,9 +40,10 @@ export function PlaceholderPage({
   cards = defaultCards,
 }: PlaceholderPageProps) {
   return (
-    <section className="space-y-5">
-      <div className="rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
-        <p className="text-xs font-bold uppercase text-[#f2d300]">{module}</p>
+    <section className="min-w-0 space-y-5">
+      <div className="rounded-xl border border-[#cdbf73] bg-white p-5 shadow-sm">
+        <div className="h-1 w-20 rounded-full bg-[#f2d300]" />
+        <p className="mt-4 text-xs font-black uppercase tracking-[0.16em] text-[#001f4d]/70">{module}</p>
         <h1 className="mt-1 text-2xl font-black tracking-normal text-[#001f4d]">
           {title}
         </h1>

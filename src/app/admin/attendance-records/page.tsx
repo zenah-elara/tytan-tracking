@@ -16,7 +16,7 @@ export default async function AdminAttendanceRecordsPage({
     <ClockRecordsPage
       mode="attendance"
       searchParams={params}
-      subtitle="Review attendance records for payroll preparation and follow-up."
+      subtitle="Daily attendance review by work date for today or a selected day."
     />
   );
 }

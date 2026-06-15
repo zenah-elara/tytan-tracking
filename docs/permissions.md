@@ -67,6 +67,7 @@ System administrator.
 | `/employee/leave/new` | Allowed | Allowed | Allowed | User can submit own Sick Leave, Vacation Leave, Emergency Leave, or Floating Leave request. |
 | `/employee/attendance` | Allowed | Allowed | Allowed | User can view own attendance. |
 | `/employee/schedule` | Allowed | Allowed | Allowed | User can view own schedule. |
+| `/account-security` | Allowed | Allowed | Allowed | Authenticated users can update their own password with Supabase Auth. |
 | `/manager` | Denied | Allowed | Allowed | Team overview for managers/admins. |
 | `/manager/team-attendance` | Denied | Allowed | Allowed | Managers see direct reports; admins see all or filtered teams. |
 | `/manager/leave-approvals` | Denied | Allowed | Allowed | Managers approve direct reports; admins approve all. |
@@ -74,6 +75,7 @@ System administrator.
 | `/manager/reports` | Denied | Allowed | Allowed | Managers see team reports; admins can use broader admin reports too. |
 | `/admin` | Denied | Denied | Allowed | Admin-only home. |
 | `/admin/employees` | Denied | Denied | Allowed | Admin-only employee management. |
+| `/admin/login-provisioning` | Denied | Denied | Allowed | Admin-only auth/profile linking for real active employees. Requires server-only service role key. |
 | `/admin/departments` | Denied | Denied | Allowed | Admin-only department management. |
 | `/admin/roles` | Denied | Denied | Allowed | Admin-only job/app role management. |
 | `/admin/schedules` | Denied | Denied | Allowed | Admin-only schedule management. |
@@ -104,6 +106,8 @@ System administrator.
 | Viewing team reports | No | Yes | Yes | Direct reports or assigned departments for managers. |
 | Viewing organization reports | No | No | Yes | Admin-wide reporting. |
 | Exporting reports | No | Yes | Yes | Managers export team scope; admins export organization scope. |
+| Changing own password | Yes | Yes | Yes | Uses the signed-in Supabase Auth session, not a service role. |
+| Login provisioning | No | No | Yes | Admin-only. Uses server-only service role when configured; excludes test employees and does not create employee rows. |
 | Viewing audit logs | No | No | Yes | Later admin feature. |
 
 ## Phase 12A Leave RLS Draft

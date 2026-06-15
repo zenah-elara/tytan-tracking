@@ -98,6 +98,7 @@ type ClockRecordsPageProps = {
   mode: RecordsMode;
   searchParams: ClockRecordsSearchParams;
   subtitle: string;
+  visibleEmployeeIds?: string[];
 };
 
 const CLOCK_STATUSES: ClockSessionStatus[] = [
@@ -117,6 +118,7 @@ export async function ClockRecordsPage({
   mode,
   searchParams,
   subtitle,
+  visibleEmployeeIds,
 }: ClockRecordsPageProps) {
   const supabase = await createClient();
   const normalizedSearchParams = withDefaultRange(searchParams, mode);
@@ -174,7 +176,12 @@ export async function ClockRecordsPage({
   ]);
 
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
-  const employeeIds = getRealEmployeeIds(employees);
+  const realEmployeeIds = getRealEmployeeIds(employees);
+  const scopeIds = visibleEmployeeIds ? new Set(visibleEmployeeIds) : null;
+  const employeeIds = new Set(
+    [...realEmployeeIds].filter((employeeId) => !scopeIds || scopeIds.has(employeeId)),
+  );
+  const visibleEmployees = employees.filter((employee) => employeeIds.has(employee.id));
   const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
     employeeIds.has(session.employeeid),
   );
@@ -191,7 +198,7 @@ export async function ClockRecordsPage({
   const dayOffRosters = ((dayOffData ?? []) as DayOffRosterRow[]).filter((row) =>
     employeeIds.has(row.employeeid),
   );
-  const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
+  const employeeMap = new Map(visibleEmployees.map((employee) => [employee.id, employee]));
   const departmentMap = new Map(
     departments.map((department) => [department.id, department.name]),
   );
@@ -271,8 +278,8 @@ function PageHeader({
     mode === "clock"
       ? "Clock Records"
       : mode === "attendance"
-        ? "Attendance Records"
-        : "Attendance Logs";
+        ? "Daily Attendance Review"
+        : "Attendance History";
 
   return (
     <header className="rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
@@ -305,7 +312,7 @@ function DailyAttendanceReview({
   if (groups.length === 0) {
     return (
       <RecordsCard title="Daily attendance review">
-        <EmptyState message="No attendance records match the selected filters." />
+        <EmptyState message="No daily attendance records match the selected filters." />
       </RecordsCard>
     );
   }
@@ -347,8 +354,8 @@ function EmployeeAttendanceLogs({
 
   if (groups.length === 0) {
     return (
-      <RecordsCard title="Employee attendance logs">
-        <EmptyState message="No employee attendance logs match the selected filters." />
+      <RecordsCard title="Attendance history">
+        <EmptyState message="No employee attendance history matches the selected filters." />
       </RecordsCard>
     );
   }

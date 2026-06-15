@@ -84,15 +84,35 @@ type OperationItem = {
   flags: string[];
 };
 
-const QUICK_ACTIONS = [
-  ["Leave Queue", "/admin/leave-approvals"],
-  ["Leave Deductions", "/admin/leave-deductions"],
-  ["Leave Accruals", "/admin/leave-accruals"],
-  ["Monthly Day-Offs", "/admin/monthly-day-offs"],
-  ["Attendance Records", "/admin/attendance-records"],
-  ["Attendance Logs", "/admin/attendance-logs"],
-  ["Payroll Review", "/admin/payroll-review"],
-  ["Employee Relations", "/admin/employee-relations"],
+const QUICK_ACTION_GROUPS = [
+  {
+    title: "People",
+    links: [
+      ["Employees", "/admin/employees"],
+      ["Login Provisioning", "/admin/login-provisioning"],
+      ["Employee Relations", "/admin/employee-relations"],
+    ],
+  },
+  {
+    title: "Leave",
+    links: [
+      ["Leave Queue", "/admin/leave-approvals"],
+      ["Leave Deductions", "/admin/leave-deductions"],
+      ["Leave Accruals", "/admin/leave-accruals"],
+    ],
+  },
+  {
+    title: "Attendance",
+    links: [
+      ["Monthly Day-Offs", "/admin/monthly-day-offs"],
+      ["Attendance Records", "/admin/attendance-records"],
+      ["Attendance Logs", "/admin/attendance-logs"],
+    ],
+  },
+  {
+    title: "Reports",
+    links: [["Payroll Review", "/admin/payroll-review"]],
+  },
 ] as const;
 
 export default async function AdminPage() {
@@ -414,15 +434,24 @@ export default async function AdminPage() {
       </div>
 
       <DashboardSection title="Quick Actions">
-        <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
-          {QUICK_ACTIONS.map(([label, href]) => (
-            <Link
-              key={href}
-              href={href}
-              className="rounded-lg border border-[#efe6b6] bg-[#fffdf2] px-4 py-3 text-sm font-bold text-[#001f4d] transition hover:border-[#f2d300] hover:bg-[#fff7bf]"
-            >
-              {label}
-            </Link>
+        <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
+          {QUICK_ACTION_GROUPS.map((group) => (
+            <div key={group.title} className="rounded-lg border border-[#efe6b6] bg-[#fffdf2] p-3">
+              <p className="text-xs font-black uppercase text-zinc-500">
+                {group.title}
+              </p>
+              <div className="mt-3 grid gap-2">
+                {group.links.map(([label, href]) => (
+                  <Link
+                    key={href}
+                    href={href}
+                    className="rounded-lg bg-white px-3 py-2 text-sm font-bold text-[#001f4d] transition hover:bg-[#fff7bf]"
+                  >
+                    {label}
+                  </Link>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       </DashboardSection>

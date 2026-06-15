@@ -2,6 +2,7 @@ import {
   ClockRecordsPage,
   type ClockRecordsSearchParams,
 } from "@/components/clock/clock-records-page";
+import { getManagerScope } from "@/lib/auth/manager-scope";
 
 type PageProps = {
   searchParams: Promise<ClockRecordsSearchParams>;
@@ -11,12 +12,14 @@ export default async function ManagerAttendanceLogsPage({
   searchParams,
 }: PageProps) {
   const params = await searchParams;
+  const scope = await getManagerScope();
 
   return (
     <ClockRecordsPage
       mode="logs"
       searchParams={params}
-      subtitle="Review employee attendance history for the selected date range."
+      visibleEmployeeIds={scope.employeeIds}
+      subtitle="Review employee-by-employee attendance history for the current month or selected date range."
     />
   );
 }

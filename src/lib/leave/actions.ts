@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { getManagerScope } from "@/lib/auth/manager-scope";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import {
   isEligibleActiveTytanEmployee,
@@ -573,7 +574,7 @@ export async function reviewLeaveRequestAction(formData: FormData) {
   const supabase = await createClient();
   const { data: request, error: requestError } = await supabase
     .from("leave_requests")
-    .select("id,status")
+    .select("id,employee_id,status")
     .eq("id", requestId)
     .maybeSingle();
 
@@ -587,6 +588,12 @@ export async function reviewLeaveRequestAction(formData: FormData) {
   if (decision === "supervisor_approve") {
     if (currentStatus !== "pending_supervisor") {
       redirectWithStatus(returnPath, "error", "wrong-status");
+    }
+
+    const scope = await getManagerScope();
+
+    if (!scope.employeeIds.includes(request.employee_id)) {
+      redirectWithStatus(returnPath, "error", "review-not-authorized");
     }
 
     updateValues = {
@@ -612,6 +619,18 @@ export async function reviewLeaveRequestAction(formData: FormData) {
       redirectWithStatus(returnPath, "error", "wrong-status");
     }
 
+    if (currentStatus === "pending_supervisor") {
+      const scope = await getManagerScope();
+
+      if (!scope.employeeIds.includes(request.employee_id)) {
+        redirectWithStatus(returnPath, "error", "review-not-authorized");
+      }
+    }
+
+    if (currentStatus === "pending_admin" && reviewer.role !== "admin") {
+      redirectWithStatus(returnPath, "error", "review-not-authorized");
+    }
+
     updateValues = {
       status: "rejected",
     };
@@ -624,7 +643,8 @@ export async function reviewLeaveRequestAction(formData: FormData) {
   const { error } = await supabase
     .from("leave_requests")
     .update(updateValues)
-    .eq("id", requestId);
+    .eq("id", requestId)
+    .eq("status", currentStatus);
 
   if (error) {
     redirectWithStatus(returnPath, "error", "review-failed");

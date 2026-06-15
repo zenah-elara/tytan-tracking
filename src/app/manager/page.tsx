@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getCurrentUserProfile } from "@/lib/auth/session";
+import { getManagerScope } from "@/lib/auth/manager-scope";
 import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
 import type { ClockSessionStatus } from "@/types/clock";
 import { createClient } from "@/lib/supabase/server";
@@ -78,15 +78,14 @@ type OperationItem = {
 
 const QUICK_ACTIONS = [
   ["Leave Queue", "/manager/leave-approvals"],
-  ["Clock Records", "/manager/clock-records"],
-  ["Attendance Records", "/manager/attendance-records"],
+  ["Team Attendance", "/manager/attendance-records"],
+  ["Team Clock Records", "/manager/clock-records"],
   ["Attendance Logs", "/manager/attendance-logs"],
-  ["Payroll Review", "/manager/payroll-review"],
   ["Leave Log", "/manager/leave-log"],
 ] as const;
 
 export default async function ManagerPage() {
-  const profile = await getCurrentUserProfile();
+  const scope = await getManagerScope();
   const supabase = await createClient();
   const today = getManilaDateString(new Date());
   const monthStart = `${today.slice(0, 8)}01`;
@@ -137,14 +136,9 @@ export default async function ManagerPage() {
   const scheduleAssignments =
     (scheduleAssignmentData ?? []) as ScheduleAssignmentRow[];
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
-  const currentEmployee = getCurrentEmployee(employees, profile?.id, profile?.email);
-  const hasBroadManagerView =
-    profile?.role === "admin" ||
-    profile?.email.toLowerCase() === "britt@tytanteams.com";
-  const scopedEmployees = getScopedEmployees(
-    employees,
-    currentEmployee?.id,
-    hasBroadManagerView,
+  const scopeEmployeeIds = new Set(scope.employeeIds);
+  const scopedEmployees = employees.filter((employee) =>
+    scopeEmployeeIds.has(employee.id),
   );
   const scopedEmployeeIds = new Set(scopedEmployees.map((employee) => employee.id));
   const scopedSessions = sessions.filter((session) =>
@@ -329,38 +323,6 @@ export default async function ManagerPage() {
       </div>
     </div>
   );
-}
-
-function getCurrentEmployee(
-  employees: EmployeeRow[],
-  profileId: string | undefined,
-  profileEmail: string | undefined,
-) {
-  return (
-    employees.find((employee) => profileId && employee.profile_id === profileId) ??
-    employees.find(
-      (employee) =>
-        profileEmail &&
-        employee.work_email.toLowerCase() === profileEmail.toLowerCase(),
-    ) ??
-    null
-  );
-}
-
-function getScopedEmployees(
-  employees: EmployeeRow[],
-  managerId: string | undefined,
-  hasBroadManagerView: boolean,
-) {
-  if (hasBroadManagerView) {
-    return employees;
-  }
-
-  if (!managerId) {
-    return [];
-  }
-
-  return employees.filter((employee) => employee.manager_id === managerId);
 }
 
 function buildOperationItem({

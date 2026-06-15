@@ -6,6 +6,7 @@ import { isAppRole } from "@/lib/auth/session";
 import { createClient } from "@/lib/supabase/server";
 
 const LOGIN_PATH = "/login";
+const ACCOUNT_SECURITY_PATH = "/account-security";
 
 type LoginErrorCode =
   | "invalid_credentials"
@@ -70,6 +71,44 @@ export async function logoutAction() {
   redirect(LOGIN_PATH);
 }
 
+export async function updatePasswordAction(formData: FormData) {
+  const password = String(formData.get("password") ?? "");
+  const confirmPassword = String(formData.get("confirm_password") ?? "");
+
+  if (!password || !confirmPassword) {
+    redirectWithAccountStatus("error", "missing-password");
+  }
+
+  if (password.length < 8) {
+    redirectWithAccountStatus("error", "password-too-short");
+  }
+
+  if (password !== confirmPassword) {
+    redirectWithAccountStatus("error", "password-mismatch");
+  }
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect(LOGIN_PATH);
+  }
+
+  const { error } = await supabase.auth.updateUser({ password });
+
+  if (error) {
+    redirectWithAccountStatus("error", "update-failed");
+  }
+
+  redirectWithAccountStatus("success", "password-updated");
+}
+
 function redirectWithLoginError(code: LoginErrorCode): never {
   redirect(`${LOGIN_PATH}?error=${code}`);
+}
+
+function redirectWithAccountStatus(type: "success" | "error", code: string): never {
+  redirect(`${ACCOUNT_SECURITY_PATH}?${type}=${code}`);
 }

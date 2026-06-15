@@ -9,9 +9,9 @@ export const APP_ROLES = {
 export const PUBLIC_ROUTE_PREFIXES = ["/login"] as const;
 
 export const ROLE_ROUTE_PREFIXES: Record<AppRole, readonly string[]> = {
-  employee: ["/dashboard", "/employee"],
-  manager: ["/dashboard", "/employee", "/manager"],
-  admin: ["/dashboard", "/employee", "/manager", "/admin"],
+  employee: ["/dashboard", "/employee", "/account-security"],
+  manager: ["/dashboard", "/employee", "/manager", "/account-security"],
+  admin: ["/dashboard", "/employee", "/manager", "/admin", "/account-security"],
 };
 
 export const ROLE_DEFAULT_ROUTES: Record<AppRole, string> = {
@@ -35,6 +35,11 @@ export const ROUTE_ACCESS_RULES: RouteAccessRule[] = [
   {
     label: "Employee",
     pathPrefix: "/employee",
+    allowedRoles: [APP_ROLES.employee, APP_ROLES.manager, APP_ROLES.admin],
+  },
+  {
+    label: "Account Security",
+    pathPrefix: "/account-security",
     allowedRoles: [APP_ROLES.employee, APP_ROLES.manager, APP_ROLES.admin],
   },
   {

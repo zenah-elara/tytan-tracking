@@ -120,9 +120,11 @@ const REVIEW_STATUSES = [
 export async function PayrollReviewPage({
   searchParams,
   subtitle,
+  visibleEmployeeIds,
 }: {
   searchParams: PayrollReviewSearchParams;
   subtitle: string;
+  visibleEmployeeIds?: string[];
 }) {
   const supabase = await createClient();
   const normalizedSearchParams = withDefaultRange(searchParams);
@@ -178,7 +180,12 @@ export async function PayrollReviewPage({
     supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
   ]);
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
-  const employeeIds = getRealEmployeeIds(employees);
+  const realEmployeeIds = getRealEmployeeIds(employees);
+  const scopeIds = visibleEmployeeIds ? new Set(visibleEmployeeIds) : null;
+  const employeeIds = new Set(
+    [...realEmployeeIds].filter((employeeId) => !scopeIds || scopeIds.has(employeeId)),
+  );
+  const visibleEmployees = employees.filter((employee) => employeeIds.has(employee.id));
   const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
     employeeIds.has(session.employeeid),
   );
@@ -198,12 +205,12 @@ export async function PayrollReviewPage({
   const departmentMap = new Map(
     departments.map((department) => [department.id, department.name]),
   );
-  const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
+  const employeeMap = new Map(visibleEmployees.map((employee) => [employee.id, employee]));
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
   const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
   const records = buildDailyRecords({
     sessions,
-    employees,
+    employees: visibleEmployees,
     departmentMap,
     employeeMap,
     approvedLeaves,

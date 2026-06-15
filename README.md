@@ -7,7 +7,7 @@ project and currently contains no Google Workspace integration.
 
 ## Current Phase
 
-Phase 13C - V1 leave admin utilities, Employee Relations, and final import prep.
+Phase 14 - Access provisioning, account security, and app-wide UI polish.
 
 The scaffold, V1 planning, Supabase auth shell, and core schema draft phases are
 complete. Phase 5 created local RLS helper and policy drafts only. Phase 6 added
@@ -49,6 +49,10 @@ dry-run script draft for real employee, schedule, and leave balance data.
 Phase 13C adds V1 admin leave adjustment logging, a simple Leave Log, Employee
 Relations month views, and final pre-import supervisor/access notes without
 applying live data.
+Phase 14 refreshes the app-wide Tytan navy/yellow UI treatment, corrects the
+header branding to Tytan Teams / Tracking Tool, adds Account Security for
+authenticated password changes, and adds admin Login Provisioning for real
+active employee auth/profile linking.
 
 ## Tech Stack
 
@@ -162,6 +166,16 @@ applying live data.
 - Leave Log added for recent requests and balance activity
 - Employee Relations added for current-month anniversaries and a birthday empty
   state until birthdate data exists
+- Header branding now shows `Tytan Teams` and `Tracking Tool`
+- Account Security added at `/account-security` for employee, manager, and
+  admin password changes
+- Admin Login Provisioning added at `/admin/login-provisioning`; it requires a
+  server-only `SUPABASE_SERVICE_ROLE_KEY` to create/link Supabase Auth users and
+  profiles
+- Login provisioning excludes test employees and Britt-as-employee; Britt remains
+  profile-only/admin access
+- Manager scope verification documents direct-report mapping for Johnnel, Aira,
+  Richelle, Blando, and the Business Development/Britt profile-only limitation
 - Leave balances are tracked in hours; current 2026 baseline should come from
   the user-provided leave monitoring reference
 - App-level core TypeScript types added
@@ -187,6 +201,8 @@ applying live data.
 - [Simple leave workflow plan](docs/simple-leave-workflow-plan.md)
 - [Clock management plan](docs/clock-management-plan.md)
 - [Employee master data import plan](docs/employee-master-data-import-plan.md)
+- [Login provisioning and access](docs/login-provisioning-and-access.md)
+- [Manager scope verification](docs/manager-scope-verification.md)
 - [V1 build plan](docs/v1-build-plan.md)
 
 ## Local Schema Drafts

@@ -23,6 +23,12 @@ actions to those RPCs. The current Leave V1 direction now pauses that
 cancellation/reversal path and drafts a simpler supervisor/admin approval
 workflow without approval-time deduction.
 
+Phase 14 adds an app-wide Tytan navy/yellow UI refresh, fixes the authenticated
+header branding to `Tytan Teams` / `Tracking Tool`, adds Account Security for
+authenticated password changes, and adds admin-only Login Provisioning for
+real active employee auth/profile linking. Provisioning requires a server-only
+service role key and does not create duplicate employee records.
+
 ## Phase 1 - Scaffold/Foundation
 
 **Status:** Completed.

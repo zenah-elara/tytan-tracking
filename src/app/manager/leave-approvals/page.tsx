@@ -1,4 +1,5 @@
 import { getCurrentUserProfile } from "@/lib/auth/session";
+import { getManagerScope } from "@/lib/auth/manager-scope";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
 import {
   deleteLeaveRequestAction,
@@ -42,6 +43,7 @@ type LeaveRequestRow = {
 export default async function LeaveApprovalsPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const profile = await getCurrentUserProfile();
+  const scope = await getManagerScope();
   const isAdmin = profile?.role === "admin";
   const supabase = await createClient();
   const [{ data: requestData, error }, { data: employeeData }, { data: typeData }] =
@@ -59,7 +61,11 @@ export default async function LeaveApprovalsPage({ searchParams }: PageProps) {
       supabase.from("leave_types").select("id,name").order("name"),
     ]);
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
-  const employeeIds = getRealEmployeeIds(employees);
+  const realEmployeeIds = getRealEmployeeIds(employees);
+  const scopeEmployeeIds = new Set(scope.employeeIds);
+  const employeeIds = new Set(
+    [...realEmployeeIds].filter((employeeId) => scopeEmployeeIds.has(employeeId)),
+  );
   const requests = ((requestData ?? []) as LeaveRequestRow[]).filter(
     (request) =>
       request.status === "pending_supervisor" && request.deletedat === null,
