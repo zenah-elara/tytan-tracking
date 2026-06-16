@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { logoutAction } from "@/lib/auth/actions";
 import { getDefaultRouteForRole } from "@/lib/auth/permissions";
 import { getCurrentUserProfile } from "@/lib/auth/session";
@@ -23,19 +24,26 @@ export async function AppShell({ children, profile: initialProfile }: AppShellPr
       <header className="border-b border-[#cdbf73] bg-white shadow-sm">
         <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#001f4d] text-sm font-black text-[#f2d300] shadow-sm">
-              TT
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-[#efe6b6] bg-white p-1 shadow-sm">
+              <Image
+                src="/tytan-logo.png"
+                alt="Tytan Teams"
+                width={42}
+                height={40}
+                priority
+                className="h-10 w-auto object-contain"
+              />
             </div>
             <div className="min-w-0">
-            <Link
-              href={homeHref}
-              className="text-xl font-black tracking-normal text-[#001f4d]"
-            >
-              Tytan Teams
-            </Link>
-            <p className="mt-0.5 text-xs font-black uppercase tracking-[0.16em] text-[#001f4d]/70">
-              Tracking Tool
-            </p>
+              <Link
+                href={homeHref}
+                className="text-xl font-black tracking-normal text-[#001f4d]"
+              >
+                Tytan Teams
+              </Link>
+              <p className="mt-0.5 text-xs font-black uppercase tracking-[0.16em] text-[#001f4d]/70">
+                Tracking Tool
+              </p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -58,7 +66,7 @@ export async function AppShell({ children, profile: initialProfile }: AppShellPr
               </>
             ) : (
               <Link
-              href="/login"
+                href="/login"
                 className="rounded-lg border border-[#cdbf73] bg-white px-3 py-2 font-bold text-[#001f4d] transition hover:border-[#f2d300]"
               >
                 Login

@@ -51,11 +51,11 @@ export function AppFrame({ children, navigationGroups }: AppFrameProps) {
 
   return (
     <div
-      className={`mx-auto grid max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:px-8 ${
-        isCollapsed ? "lg:grid-cols-[76px_minmax(0,1fr)]" : "lg:grid-cols-[240px_minmax(0,1fr)]"
+      className={`mx-auto grid max-w-7xl gap-3 px-4 py-5 sm:px-6 lg:gap-4 lg:px-6 ${
+        isCollapsed ? "lg:grid-cols-[72px_minmax(0,1fr)]" : "lg:grid-cols-[224px_minmax(0,1fr)]"
       }`}
     >
-      <aside className="h-fit rounded-xl border border-[#cdbf73] bg-white p-3 shadow-sm">
+      <aside className="h-fit rounded-xl border border-[#cdbf73] bg-white p-2.5 shadow-sm">
         <div className="flex items-center justify-between gap-2 rounded-lg bg-[#001f4d] p-2">
           <p
             className={`text-xs font-black uppercase tracking-[0.14em] text-white/75 ${
@@ -74,18 +74,25 @@ export function AppFrame({ children, navigationGroups }: AppFrameProps) {
           </button>
         </div>
         <nav
-          className={`space-y-3 ${isCollapsed ? "mt-2" : "mt-3"}`}
+          className={`space-y-1.5 ${isCollapsed ? "mt-2" : "mt-3"}`}
           aria-label="Main navigation"
         >
           {navigationGroups.map((group) => (
-            <section key={group.title}>
+            <section
+              key={group.title}
+              className={`rounded-lg ${collapsedGroups[group.title] ? "" : "bg-[#fffdf2]"}`}
+            >
               <button
                 type="button"
                 onClick={() => toggleGroup(group.title)}
                 aria-expanded={!collapsedGroups[group.title]}
                 aria-label={`${collapsedGroups[group.title] ? "Expand" : "Collapse"} ${group.title} navigation`}
-                className={`flex w-full items-center rounded-lg text-xs font-black uppercase tracking-[0.08em] text-[#001f4d] transition hover:bg-[#fff7bf] ${
-                  isCollapsed ? "justify-center px-2 py-2" : "justify-between px-2 py-1.5"
+                className={`flex w-full items-center rounded-lg border text-[11px] font-black uppercase tracking-[0.12em] text-[#001f4d] transition hover:bg-[#fff7bf] ${
+                  collapsedGroups[group.title]
+                    ? "border-transparent"
+                    : "border-[#efe6b6] bg-white shadow-sm"
+                } ${
+                  isCollapsed ? "justify-center px-2 py-2" : "justify-between px-2.5 py-2"
                 }`}
               >
                 <span className={`flex items-center gap-2 ${isCollapsed ? "" : "min-w-0"}`}>
@@ -101,7 +108,11 @@ export function AppFrame({ children, navigationGroups }: AppFrameProps) {
                 )}
               </button>
               {collapsedGroups[group.title] ? null : (
-                <div className="mt-2 grid gap-1">
+                <div
+                  className={`mt-1.5 grid gap-0.5 border-l border-[#f2d300]/60 ${
+                    isCollapsed ? "border-l-0 pl-0" : "ml-3 pl-2"
+                  }`}
+                >
                   {group.links.map((link) => (
                     <NavLink
                       key={link.href}

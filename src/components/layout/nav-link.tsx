@@ -21,8 +21,8 @@ export function NavLink({ href, label, collapsed = false }: NavLinkProps) {
       aria-current={isActive ? "page" : undefined}
       className={
         isActive
-          ? `flex items-center gap-2 rounded-lg border border-[#f2d300] bg-[#001f4d] px-2 py-2 text-sm font-black text-white shadow-sm ${collapsed ? "justify-center" : ""}`
-          : `flex items-center gap-2 rounded-lg border border-transparent px-2 py-2 text-sm font-semibold text-zinc-700 transition hover:border-[#efe6b6] hover:bg-[#fff7bf] hover:text-[#001f4d] ${collapsed ? "justify-center" : ""}`
+          ? `flex items-center gap-2 rounded-lg border border-[#f2d300] bg-[#001f4d] px-2 py-1.5 text-[13px] font-black text-white shadow-sm ${collapsed ? "justify-center" : ""}`
+          : `flex items-center gap-2 rounded-lg border border-transparent px-2 py-1.5 text-[13px] font-semibold text-zinc-600 transition hover:border-[#efe6b6] hover:bg-white hover:text-[#001f4d] ${collapsed ? "justify-center" : ""}`
       }
     >
       <NavIcon label={label} />
