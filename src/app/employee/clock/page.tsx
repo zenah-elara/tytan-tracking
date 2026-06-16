@@ -45,18 +45,33 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
     );
   }
 
-  const { data, error } = await supabase
-    .from("clock_sessions")
-    .select("id,employeeid,workdate,clockinat,clockoutat,status,grossminutes,breakminutes,networkminutes")
-    .eq("employeeid", employee.id)
-    .eq("workdate", today)
-    .order("clockinat", { ascending: false });
-  const sessions = (data ?? []) as ClockSessionRow[];
-  const currentSession =
-    sessions.find((session) => ["active", "on_break"].includes(session.status)) ??
-    sessions[0] ??
-    null;
+  const [
+    { data: openSessionData, error: openSessionError },
+    { data: todaySessionData, error: todaySessionError },
+  ] = await Promise.all([
+    supabase
+      .from("clock_sessions")
+      .select("id,employeeid,workdate,clockinat,clockoutat,status,grossminutes,breakminutes,networkminutes")
+      .eq("employeeid", employee.id)
+      .is("clockoutat", null)
+      .in("status", ["active", "on_break"])
+      .order("clockinat", { ascending: false })
+      .limit(1),
+    supabase
+      .from("clock_sessions")
+      .select("id,employeeid,workdate,clockinat,clockoutat,status,grossminutes,breakminutes,networkminutes")
+      .eq("employeeid", employee.id)
+      .eq("workdate", today)
+      .order("clockinat", { ascending: false }),
+  ]);
+  const openSession = ((openSessionData ?? []) as ClockSessionRow[])[0] ?? null;
+  const todaySessions = (todaySessionData ?? []) as ClockSessionRow[];
+  const currentSession = openSession ?? todaySessions[0] ?? null;
   const currentStatus = getCurrentStatus(currentSession);
+  const displayedWorkDate = currentSession?.workdate ?? today;
+  const isOpenPreviousWorkDateSession =
+    Boolean(openSession) && openSession?.workdate !== today;
+  const statusError = openSessionError?.message ?? todaySessionError?.message;
 
   return (
     <div className="grid gap-6">
@@ -65,11 +80,11 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
           Clock
         </h1>
         <p className="mt-1 text-sm text-zinc-600">
-          Clock in, manage breaks, and clock out for today.
+          Clock in, manage breaks, and clock out for your active shift.
         </p>
       </header>
 
-      <StatusMessage success={params.success} error={params.error ?? error?.message} />
+      <StatusMessage success={params.success} error={params.error ?? statusError} />
 
       <section className="rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
         <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-center">
@@ -81,17 +96,27 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
               {currentStatus}
             </h2>
             <p className="mt-1 text-sm text-zinc-600">
-              Work date: {today}
+              Work date: {displayedWorkDate}
             </p>
+            {isOpenPreviousWorkDateSession ? (
+              <p className="mt-2 rounded-lg border border-[#efe6b6] bg-[#fffdf2] px-3 py-2 text-sm font-semibold text-[#001f4d]">
+                Active graveyard shift crossing midnight.
+              </p>
+            ) : null}
+            {currentSession?.status === "on_break" ? (
+              <p className="mt-2 text-sm text-zinc-600">
+                End your break before clocking out.
+              </p>
+            ) : null}
           </div>
           <ClockActions session={currentSession} />
         </div>
       </section>
 
       <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
-        <TableHeader title="Today's session" />
+        <TableHeader title={openSession ? "Active session" : "Today's session"} />
         {!currentSession ? (
-          <EmptyState message="No clock session for today yet." />
+          <EmptyState message="No active or current-day clock session yet." />
         ) : (
           <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="Clock in" value={formatDateTime(currentSession.clockinat)} />

@@ -138,11 +138,17 @@ export default async function EmployeePage() {
     (scheduleAssignmentData ?? []) as ScheduleAssignmentRow[];
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
+  const openSession =
+    sessions.find(
+      (session) =>
+        !session.clockoutat && ["active", "on_break"].includes(session.status),
+    ) ?? null;
   const todaysSessions = sessions.filter((session) => session.workdate === today);
   const currentSession =
-    todaysSessions.find((session) => ["active", "on_break"].includes(session.status)) ??
+    openSession ??
     todaysSessions[0] ??
     null;
+  const currentWorkDate = currentSession?.workdate ?? today;
   const approvedLeaveToday = requests.find(
     (request) =>
       request.status === "approved" &&
@@ -178,7 +184,10 @@ export default async function EmployeePage() {
 
       <section className="grid gap-3 md:grid-cols-3">
         <SummaryCard label="Clock status" value={getCurrentStatus(currentSession)} />
-        <SummaryCard label="Today" value={todayContext} />
+        <SummaryCard
+          label={currentWorkDate === today ? "Today" : "Active work date"}
+          value={currentWorkDate === today ? todayContext : currentWorkDate}
+        />
         <SummaryCard
           label="Net worked"
           value={currentSession ? formatMinutes(currentSession.networkminutes) : "0h 0m"}
