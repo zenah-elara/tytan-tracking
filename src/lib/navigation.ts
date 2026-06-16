@@ -4,6 +4,7 @@ import type { AppRole } from "@/types/auth";
 export type NavigationLink = {
   label: string;
   href: string;
+  exact?: boolean;
 };
 
 export type NavigationGroup = {
@@ -15,16 +16,16 @@ export const navigationGroups: NavigationGroup[] = [
   {
     title: "Employee",
     links: [
-      { label: "Home", href: "/employee" },
+      { label: "Home", href: "/employee", exact: true },
       { label: "Clock", href: "/employee/clock" },
       { label: "Leave", href: "/employee/leave" },
-      { label: "Account Security", href: "/account-security" },
+      { label: "Account Security", href: "/account-security", exact: true },
     ],
   },
   {
     title: "Manager",
     links: [
-      { label: "Team Dashboard", href: "/manager" },
+      { label: "Team Dashboard", href: "/manager", exact: true },
       { label: "Leave Queue", href: "/manager/leave-approvals" },
       { label: "Team Attendance", href: "/manager/attendance-records" },
       { label: "Team Clock Records", href: "/manager/clock-records" },
@@ -35,7 +36,7 @@ export const navigationGroups: NavigationGroup[] = [
   {
     title: "Admin",
     links: [
-      { label: "Dashboard", href: "/admin" },
+      { label: "Dashboard", href: "/admin", exact: true },
     ],
   },
   {

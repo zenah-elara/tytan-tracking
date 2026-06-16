@@ -118,6 +118,7 @@ export function AppFrame({ children, navigationGroups }: AppFrameProps) {
                       key={link.href}
                       href={link.href}
                       label={link.label}
+                      exact={link.exact}
                       collapsed={isCollapsed}
                     />
                   ))}

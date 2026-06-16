@@ -6,12 +6,15 @@ import { usePathname } from "next/navigation";
 type NavLinkProps = {
   href: string;
   label: string;
+  exact?: boolean;
   collapsed?: boolean;
 };
 
-export function NavLink({ href, label, collapsed = false }: NavLinkProps) {
+export function NavLink({ href, label, exact = false, collapsed = false }: NavLinkProps) {
   const pathname = usePathname();
-  const isActive = pathname === href || pathname.startsWith(`${href}/`);
+  const isActive = exact
+    ? pathname === href
+    : pathname === href || pathname.startsWith(`${href}/`);
 
   return (
     <Link
