@@ -16,7 +16,7 @@ export default async function AdminAttendanceLogsPage({
     <ClockRecordsPage
       mode="logs"
       searchParams={params}
-      subtitle="Review employee-by-employee attendance history for salary report preparation."
+      subtitle="Employee-by-employee attendance history across the selected period."
     />
   );
 }

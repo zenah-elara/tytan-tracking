@@ -18,7 +18,7 @@ export default async function ManagerPayrollReviewPage({
     <PayrollReviewPage
       searchParams={params}
       visibleEmployeeIds={scope.employeeIds}
-      subtitle="Review scoped team attendance, leave, day-off, and exception records before future payroll processing."
+      subtitle="Team payroll readiness review for salary validation. No pay amounts are calculated."
     />
   );
 }

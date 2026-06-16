@@ -10,7 +10,12 @@ export type PayrollReviewSearchParams = {
   status?: string;
 };
 
-type AttendanceStatus = "complete" | "on_leave" | "day_off" | "needs_review";
+type AttendanceStatus =
+  | "complete"
+  | "in_progress"
+  | "on_leave"
+  | "day_off"
+  | "needs_review";
 
 type EmployeeRow = {
   id: string;
@@ -83,6 +88,7 @@ type DailyPayrollRecord = {
   attendanceStatus: AttendanceStatus;
   clockIn: string | null;
   clockOut: string | null;
+  clockStatus: ClockSessionStatus | null;
   grossMinutes: number;
   breakMinutes: number;
   netMinutes: number;
@@ -99,6 +105,7 @@ type EmployeePayrollGroup = {
   records: DailyPayrollRecord[];
   totalRecords: number;
   completeDays: number;
+  inProgressDays: number;
   leaveDays: number;
   dayOffDays: number;
   needsReviewDays: number;
@@ -116,6 +123,10 @@ const REVIEW_STATUSES = [
   "has_leave",
   "has_incomplete",
 ] as const;
+
+const REQUIRED_SHIFT_MINUTES = 480;
+const START_GRACE_MINUTES = 5;
+const MISSING_CLOCK_OUT_GRACE_MINUTES = 60;
 
 export async function PayrollReviewPage({
   searchParams,
@@ -259,6 +270,8 @@ export async function PayrollReviewPage({
         searchParams={normalizedSearchParams}
       />
 
+      <PayrollQuickLook groups={groups} />
+
       {groups.length === 0 ? (
         <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
           <EmptyState message="No payroll review rows match the selected filters." />
@@ -271,6 +284,34 @@ export async function PayrollReviewPage({
         </section>
       )}
     </div>
+  );
+}
+
+function PayrollQuickLook({ groups }: { groups: EmployeePayrollGroup[] }) {
+  const records = groups.flatMap((group) => group.records);
+  const items = [
+    ["Employees", groups.length],
+    ["Daily rows", records.length],
+    ["Complete", records.filter((record) => record.attendanceStatus === "complete").length],
+    ["In Progress", records.filter((record) => record.attendanceStatus === "in_progress").length],
+    ["PTO/Leave", records.filter((record) => record.attendanceStatus === "on_leave").length],
+    ["Needs Review", records.filter((record) => record.attendanceStatus === "needs_review").length],
+  ];
+
+  return (
+    <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+      {items.map(([label, value]) => (
+        <div
+          key={label}
+          className="rounded-lg border border-[#efe6b6] bg-white px-4 py-3 shadow-sm"
+        >
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-[#001f4d]/60">
+            {label}
+          </p>
+          <p className="mt-1 text-xl font-black text-[#001f4d]">{value}</p>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -291,8 +332,8 @@ function EmployeePayrollCard({ group }: { group: EmployeePayrollGroup }) {
         </div>
       </summary>
       <div className="max-w-full overflow-x-auto">
-        <table className="min-w-[980px] text-left text-sm">
-          <thead className="bg-[#fffdf2] text-xs uppercase text-zinc-500">
+        <table className="min-w-[980px] border-separate border-spacing-0 text-left text-sm">
+          <thead className="bg-[#001f4d] text-xs uppercase text-white">
             <tr>
               <th className="px-5 py-3">Date</th>
               <th className="px-5 py-3">Attendance</th>
@@ -306,7 +347,7 @@ function EmployeePayrollCard({ group }: { group: EmployeePayrollGroup }) {
           </thead>
           <tbody className="divide-y divide-zinc-100">
             {group.records.map((record) => (
-              <tr key={record.key}>
+              <tr key={record.key} className="align-top transition hover:bg-[#fffdf2]">
                 <td className="px-5 py-4 text-zinc-600">{record.date}</td>
                 <td className="px-5 py-4">
                   <StatusBadge status={record.attendanceStatus} />
@@ -315,15 +356,15 @@ function EmployeePayrollCard({ group }: { group: EmployeePayrollGroup }) {
                   {record.clockIn ? formatTime(record.clockIn) : "None"}
                 </td>
                 <td className="px-5 py-4 text-zinc-600">
-                  {record.clockOut ? formatTime(record.clockOut) : "Missing"}
+                  {formatClockOut(record)}
                 </td>
                 <td className="px-5 py-4 font-semibold text-[#001f4d]">
-                  {formatMinutes(record.netMinutes)}
+                  {formatWorkedMinutes(record)}
                 </td>
                 <td className="px-5 py-4 text-zinc-600">{record.leaveLabel}</td>
                 <td className="px-5 py-4 text-zinc-600">{record.dayOffLabel}</td>
                 <td className="px-5 py-4 text-zinc-600">
-                  {record.flags.join(", ") || "None"}
+                  <FlagChips flags={record.flags} />
                 </td>
               </tr>
             ))}
@@ -338,6 +379,7 @@ function SummaryChips({ group }: { group: EmployeePayrollGroup }) {
   const chips = [
     ["Records", group.totalRecords],
     ["Complete", group.completeDays],
+    ["In Progress", group.inProgressDays],
     ["PTO/Leave", group.leaveDays],
     ["Day Off", group.dayOffDays],
     ["Needs Review", group.needsReviewDays],
@@ -535,8 +577,21 @@ function buildRecordForDate({
     ? findScheduleForSession(session, scheduleAssignments, scheduleMap)
     : null;
   const scheduleFlags = session ? getScheduleFlags(session, schedule) : [];
-  const attendanceStatus = getAttendanceStatus(session, leaveLabel, dayOffLabel, scheduleFlags);
-  const flags = getFlags(session, leaveLabel, dayOffLabel, attendanceStatus, scheduleFlags);
+  const attendanceStatus = getAttendanceStatus(
+    session,
+    leaveLabel,
+    dayOffLabel,
+    schedule,
+    scheduleFlags,
+  );
+  const flags = getFlags(
+    session,
+    leaveLabel,
+    dayOffLabel,
+    attendanceStatus,
+    schedule,
+    scheduleFlags,
+  );
   const departmentName = employee.department_id
     ? departmentMap.get(employee.department_id) ?? "Unassigned"
     : "Unassigned";
@@ -551,6 +606,7 @@ function buildRecordForDate({
     attendanceStatus,
     clockIn: session?.clockinat ?? null,
     clockOut: session?.clockoutat ?? null,
+    clockStatus: session?.status ?? null,
     grossMinutes: Number(session?.grossminutes ?? 0),
     breakMinutes: Number(session?.breakminutes ?? 0),
     netMinutes: Number(session?.networkminutes ?? 0),
@@ -564,13 +620,25 @@ function getAttendanceStatus(
   session: ClockSessionRow | null,
   leaveLabel: string,
   dayOffLabel: string,
+  schedule: WorkScheduleRow | null,
   scheduleFlags: string[],
 ): AttendanceStatus {
   if (leaveLabel !== "None") return "on_leave";
   if (dayOffLabel !== "None") return "day_off";
   if (!session) return "needs_review";
+  if (
+    isOngoingSession(session) &&
+    !scheduleFlags.includes("Schedule Missing") &&
+    !isPastClockOutCutoff(session, schedule)
+  ) {
+    return "in_progress";
+  }
   if (scheduleFlags.length > 0) return "needs_review";
-  if (session.status === "completed" && session.clockoutat && session.networkminutes >= 480) {
+  if (
+    session.status === "completed" &&
+    session.clockoutat &&
+    session.networkminutes >= REQUIRED_SHIFT_MINUTES
+  ) {
     return "complete";
   }
   return "needs_review";
@@ -581,6 +649,7 @@ function getFlags(
   leaveLabel: string,
   dayOffLabel: string,
   attendanceStatus: AttendanceStatus,
+  schedule: WorkScheduleRow | null,
   scheduleFlags: string[],
 ) {
   const flags = [...scheduleFlags];
@@ -588,11 +657,17 @@ function getFlags(
   if (leaveLabel !== "None") flags.push("On PTO/Leave");
   if (dayOffLabel !== "None") flags.push("Day Off");
   if (!session) return flags;
-  if (!session.clockoutat) flags.push("Missing clock out");
   if (session.status === "active") flags.push("Active shift");
   if (session.status === "on_break") flags.push("Currently on break");
   if (session.status === "voided") flags.push("Voided record");
-  if (attendanceStatus === "needs_review" && session.networkminutes < 480) {
+  if (!session.clockoutat && isPastClockOutCutoff(session, schedule)) {
+    flags.push("Missing clock out");
+  }
+  if (
+    attendanceStatus === "needs_review" &&
+    !isOngoingSession(session) &&
+    session.networkminutes < REQUIRED_SHIFT_MINUTES
+  ) {
     flags.push("Under 8 hours");
   }
 
@@ -628,17 +703,22 @@ function buildEmployeeGroup(
     records,
     totalRecords: records.length,
     completeDays: records.filter((record) => record.attendanceStatus === "complete").length,
+    inProgressDays: records.filter((record) => record.attendanceStatus === "in_progress").length,
     leaveDays: records.filter((record) => record.attendanceStatus === "on_leave").length,
     dayOffDays: records.filter((record) => record.attendanceStatus === "day_off").length,
     needsReviewDays,
     netMinutes: records.reduce((total, record) => total + record.netMinutes, 0),
     breakMinutes: records.reduce((total, record) => total + record.breakMinutes, 0),
     incompleteCount: records.filter(
-      (record) => record.flags.includes("Missing clock out") || record.flags.includes("Active shift") || record.flags.includes("Currently on break"),
+      (record) => record.flags.includes("Missing clock out") || record.attendanceStatus === "in_progress",
     ).length,
     lateLogInCount: records.filter((record) => record.flags.includes("Late Log In")).length,
     lateLogOutCount: records.filter((record) => record.flags.includes("Late Log Out")).length,
-    reviewStatus: needsReviewDays > 0 ? "Needs Review" : "Ready",
+    reviewStatus:
+      needsReviewDays > 0 ||
+      records.some((record) => record.attendanceStatus === "in_progress")
+        ? "Needs Review"
+        : "Ready",
   };
 }
 
@@ -737,7 +817,7 @@ function getScheduleFlags(session: ClockSessionRow, schedule: WorkScheduleRow | 
   const clockOut = session.clockoutat ? new Date(session.clockoutat).getTime() : null;
   const flags = [];
 
-  if (clockIn - scheduledStart.getTime() > 5 * 60 * 1000) {
+  if (clockIn - scheduledStart.getTime() > START_GRACE_MINUTES * 60 * 1000) {
     flags.push("Late Log In");
   }
 
@@ -746,6 +826,25 @@ function getScheduleFlags(session: ClockSessionRow, schedule: WorkScheduleRow | 
   }
 
   return flags;
+}
+
+function isOngoingSession(session: ClockSessionRow) {
+  return session.status === "active" || session.status === "on_break";
+}
+
+function isPastClockOutCutoff(
+  session: ClockSessionRow,
+  schedule: WorkScheduleRow | null,
+) {
+  if (session.clockoutat || !schedule) return false;
+
+  const scheduledEnd = getScheduledDateTime(
+    getShiftEndDate(session.workdate, schedule.shift_start, schedule.shift_end),
+    schedule.shift_end,
+  );
+  const cutoff = scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
+
+  return Date.now() > cutoff;
 }
 
 function buildCsvHref(groups: EmployeePayrollGroup[]) {
@@ -815,18 +914,42 @@ function FormField({
 
 function StatusBadge({ status }: { status: AttendanceStatus }) {
   const styles = {
-    complete: "bg-emerald-100 text-emerald-800",
-    on_leave: "bg-[#f2d300] text-[#001f4d]",
-    day_off: "bg-sky-100 text-sky-800",
-    needs_review: "bg-red-100 text-red-700",
+    complete: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    in_progress: "border-[#b8cae8] bg-[#eef4ff] text-[#001f4d]",
+    on_leave: "border-[#f2d300] bg-[#fff7bf] text-[#001f4d]",
+    day_off: "border-sky-200 bg-sky-50 text-sky-800",
+    needs_review: "border-amber-200 bg-amber-50 text-amber-800",
   } satisfies Record<AttendanceStatus, string>;
 
   return (
     <span
-      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${styles[status]}`}
+      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-bold ${styles[status]}`}
     >
       {formatAttendanceStatus(status)}
     </span>
+  );
+}
+
+function FlagChips({ flags }: { flags: string[] }) {
+  if (flags.length === 0) return <>None</>;
+
+  return (
+    <div className="flex max-w-72 flex-wrap gap-1.5">
+      {flags.map((flag) => (
+        <span
+          key={flag}
+          className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-bold ${
+            ["Missing clock out", "Under 8 hours", "Schedule Missing", "Voided record"].includes(flag)
+              ? "border-amber-200 bg-amber-50 text-amber-800"
+              : ["Active shift", "Currently on break"].includes(flag)
+                ? "border-[#b8cae8] bg-[#eef4ff] text-[#001f4d]"
+                : "border-[#efe6b6] bg-[#fffdf2] text-[#001f4d]"
+          }`}
+        >
+          {flag}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -916,6 +1039,26 @@ function formatTime(value: string) {
   });
 }
 
+function formatClockOut(record: DailyPayrollRecord) {
+  if (record.clockOut) return formatTime(record.clockOut);
+  if (record.attendanceStatus === "in_progress") return "In progress";
+  if (record.clockStatus === "active" || record.clockStatus === "on_break") {
+    return "Not yet clocked out";
+  }
+  return "Missing";
+}
+
+function formatWorkedMinutes(record: DailyPayrollRecord) {
+  if (
+    record.attendanceStatus === "in_progress" ||
+    record.clockStatus === "active" ||
+    record.clockStatus === "on_break"
+  ) {
+    return "In progress";
+  }
+  return formatMinutes(record.netMinutes);
+}
+
 function formatMinutes(value: number) {
   const hours = Math.floor(value / 60);
   const minutes = value % 60;
@@ -924,6 +1067,7 @@ function formatMinutes(value: number) {
 
 function formatAttendanceStatus(status: AttendanceStatus) {
   if (status === "complete") return "Complete";
+  if (status === "in_progress") return "In Progress";
   if (status === "on_leave") return "On PTO/Leave";
   if (status === "day_off") return "Day Off";
   return "Needs Review";

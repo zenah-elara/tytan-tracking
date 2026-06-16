@@ -13,7 +13,12 @@ export type ClockRecordsSearchParams = {
 };
 
 type RecordsMode = "clock" | "attendance" | "logs";
-type AttendanceStatus = "complete" | "on_leave" | "day_off" | "needs_review";
+type AttendanceStatus =
+  | "complete"
+  | "in_progress"
+  | "on_leave"
+  | "day_off"
+  | "needs_review";
 
 type EmployeeRow = {
   id: string;
@@ -109,10 +114,15 @@ const CLOCK_STATUSES: ClockSessionStatus[] = [
 ];
 const ATTENDANCE_STATUSES: AttendanceStatus[] = [
   "complete",
+  "in_progress",
   "on_leave",
   "day_off",
   "needs_review",
 ];
+
+const REQUIRED_SHIFT_MINUTES = 480;
+const START_GRACE_MINUTES = 5;
+const MISSING_CLOCK_OUT_GRACE_MINUTES = 60;
 
 export async function ClockRecordsPage({
   mode,
@@ -243,6 +253,8 @@ export async function ClockRecordsPage({
         mode={mode}
         searchParams={normalizedSearchParams}
       />
+
+      <QuickLookSummary sessions={filteredSessions} mode={mode} />
 
       {mode === "clock" ? (
         <RecordsCard title="Raw clock logs">
@@ -396,8 +408,8 @@ function EmployeeAttendanceLogs({
 
 function ClockTable({ sessions }: { sessions: EnrichedClockSession[] }) {
   return (
-    <table className="min-w-[1080px] text-left text-sm">
-      <thead className="bg-[#fffdf2] text-xs uppercase text-zinc-500">
+    <table className="min-w-[1080px] border-separate border-spacing-0 text-left text-sm">
+      <thead className="bg-[#001f4d] text-xs uppercase text-white">
         <tr>
           <th className="w-56 px-4 py-3">Employee</th>
           <th className="w-48 px-4 py-3">Department</th>
@@ -413,7 +425,7 @@ function ClockTable({ sessions }: { sessions: EnrichedClockSession[] }) {
       </thead>
       <tbody className="divide-y divide-zinc-100">
         {sessions.map((session) => (
-          <tr key={session.id}>
+          <tr key={session.id} className="align-top transition hover:bg-[#fffdf2]">
             <EmployeeCell session={session} />
             <td className="px-4 py-4 text-zinc-600">{session.departmentName}</td>
             <td className="px-4 py-4 text-zinc-600">{session.workdate}</td>
@@ -431,8 +443,8 @@ function ClockTable({ sessions }: { sessions: EnrichedClockSession[] }) {
 
 function DailyAttendanceTable({ sessions }: { sessions: EnrichedClockSession[] }) {
   return (
-    <table className="min-w-[980px] text-left text-sm">
-      <thead className="bg-[#fffdf2] text-xs uppercase text-zinc-500">
+    <table className="min-w-[980px] border-separate border-spacing-0 text-left text-sm">
+      <thead className="bg-[#001f4d] text-xs uppercase text-white">
         <tr>
           <th className="w-56 px-4 py-3">Employee</th>
           <th className="w-48 px-4 py-3">Department</th>
@@ -446,17 +458,17 @@ function DailyAttendanceTable({ sessions }: { sessions: EnrichedClockSession[] }
       </thead>
       <tbody className="divide-y divide-zinc-100">
         {sessions.map((session) => (
-          <tr key={session.id}>
+          <tr key={session.id} className="align-top transition hover:bg-[#fffdf2]">
             <EmployeeCell session={session} />
             <td className="px-4 py-4 text-zinc-600">{session.departmentName}</td>
             <td className="px-4 py-4 text-zinc-600">
               {formatTime(session.clockinat)}
             </td>
             <td className="px-4 py-4 text-zinc-600">
-              {session.clockoutat ? formatTime(session.clockoutat) : "Missing"}
+              {formatClockOut(session)}
             </td>
             <td className="px-4 py-4 font-semibold text-[#001f4d]">
-              {formatMinutes(session.networkminutes)}
+              {formatWorkedMinutes(session)}
             </td>
             <td className="px-4 py-4">
               <LeaveBadge
@@ -477,8 +489,8 @@ function DailyAttendanceTable({ sessions }: { sessions: EnrichedClockSession[] }
 
 function EmployeeLogTable({ sessions }: { sessions: EnrichedClockSession[] }) {
   return (
-    <table className="min-w-[1040px] text-left text-sm">
-      <thead className="bg-[#fffdf2] text-xs uppercase text-zinc-500">
+    <table className="min-w-[1040px] border-separate border-spacing-0 text-left text-sm">
+      <thead className="bg-[#001f4d] text-xs uppercase text-white">
         <tr>
           <th className="w-32 px-4 py-3">Date</th>
           <th className="w-36 px-4 py-3">Attendance</th>
@@ -493,7 +505,7 @@ function EmployeeLogTable({ sessions }: { sessions: EnrichedClockSession[] }) {
       </thead>
       <tbody className="divide-y divide-zinc-100">
         {sessions.map((session) => (
-          <tr key={session.id}>
+          <tr key={session.id} className="align-top transition hover:bg-[#fffdf2]">
             <td className="px-4 py-4 text-zinc-600">{session.workdate}</td>
             <td className="px-4 py-4">
               <AttendanceBadge status={session.attendanceStatus} />
@@ -502,7 +514,7 @@ function EmployeeLogTable({ sessions }: { sessions: EnrichedClockSession[] }) {
               {formatTime(session.clockinat)}
             </td>
             <td className="px-4 py-4 text-zinc-600">
-              {session.clockoutat ? formatTime(session.clockoutat) : "Missing"}
+              {formatClockOut(session)}
             </td>
             <td className="px-4 py-4 text-zinc-600">
               {formatMinutes(session.grossminutes)}
@@ -511,7 +523,7 @@ function EmployeeLogTable({ sessions }: { sessions: EnrichedClockSession[] }) {
               {formatMinutes(session.breakminutes)}
             </td>
             <td className="px-4 py-4 font-semibold text-[#001f4d]">
-              {formatMinutes(session.networkminutes)}
+              {formatWorkedMinutes(session)}
             </td>
             <td className="px-4 py-4">
               <LeaveBadge
@@ -532,12 +544,12 @@ function TimeCells({ session }: { session: EnrichedClockSession }) {
     <>
       <td className="px-4 py-4 text-zinc-600">{formatDateTime(session.clockinat)}</td>
       <td className="px-4 py-4 text-zinc-600">
-        {session.clockoutat ? formatDateTime(session.clockoutat) : "Missing"}
+        {formatClockOutDateTime(session)}
       </td>
       <td className="px-4 py-4 text-zinc-600">{formatMinutes(session.grossminutes)}</td>
       <td className="px-4 py-4 text-zinc-600">{formatMinutes(session.breakminutes)}</td>
       <td className="px-4 py-4 font-semibold text-[#001f4d]">
-        {formatMinutes(session.networkminutes)}
+        {formatWorkedMinutes(session)}
       </td>
     </>
   );
@@ -555,9 +567,19 @@ function EmployeeCell({ session }: { session: EnrichedClockSession }) {
 }
 
 function FlagsCell({ session }: { session: EnrichedClockSession }) {
+  const labels = session.flags.length > 0 ? session.flags : session.notes ? [session.notes] : [];
+
   return (
     <td className="px-4 py-4 text-zinc-600">
-      {session.flags.join(", ") || session.notes || "None"}
+      {labels.length > 0 ? (
+        <div className="flex max-w-72 flex-wrap gap-1.5">
+          {labels.map((flag) => (
+            <FlagChip key={flag} label={flag} />
+          ))}
+        </div>
+      ) : (
+        "None"
+      )}
     </td>
   );
 }
@@ -726,6 +748,7 @@ function SummaryChips({
   const chips = [
     [label, String(summary.totalRecords)],
     ["Complete", String(summary.complete)],
+    ["In Progress", String(summary.inProgress)],
     ["PTO/Leave", String(summary.onLeave)],
     ["Day Off", String(summary.dayOff)],
     ["Active/Break", String(summary.activeOrBreak)],
@@ -745,6 +768,48 @@ function SummaryChips({
         </span>
       ))}
     </div>
+  );
+}
+
+function QuickLookSummary({
+  sessions,
+  mode,
+}: {
+  sessions: EnrichedClockSession[];
+  mode: RecordsMode;
+}) {
+  const summary = getGroupSummary(sessions);
+  const clockItems = [
+    ["Total records", sessions.length],
+    ["Completed", sessions.filter((session) => session.status === "completed").length],
+    ["Active", sessions.filter((session) => session.status === "active").length],
+    ["On break", sessions.filter((session) => session.status === "on_break").length],
+    ["Missing out", sessions.filter((session) => session.flags.includes("Missing clock out")).length],
+  ];
+  const attendanceItems = [
+    ["Total records", summary.totalRecords],
+    ["Complete", summary.complete],
+    ["In Progress", summary.inProgress],
+    ["PTO/Leave", summary.onLeave],
+    ["Day Off", summary.dayOff],
+    ["Needs Review", summary.needsReview],
+  ];
+  const items = mode === "clock" ? clockItems : attendanceItems;
+
+  return (
+    <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+      {items.map(([label, value]) => (
+        <div
+          key={label}
+          className="rounded-lg border border-[#efe6b6] bg-white px-4 py-3 shadow-sm"
+        >
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-[#001f4d]/60">
+            {label}
+          </p>
+          <p className="mt-1 text-xl font-black text-[#001f4d]">{value}</p>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -781,6 +846,7 @@ function enrichSession(
     session,
     leaveMatches,
     dayOffLabel,
+    schedule,
     scheduleFlags,
   );
   const flags = getFlags(
@@ -788,6 +854,7 @@ function enrichSession(
     leaveMatches,
     dayOffLabel,
     attendanceStatus,
+    schedule,
     scheduleFlags,
   );
 
@@ -808,15 +875,23 @@ function getAttendanceStatus(
   session: ClockSessionRow,
   leaveMatches: LeaveRequestRow[],
   dayOffLabel: string,
+  schedule: ScheduleContext | null,
   scheduleFlags: string[],
 ): AttendanceStatus {
   if (leaveMatches.length > 0) return "on_leave";
   if (dayOffLabel !== "None") return "day_off";
+  if (
+    isOngoingSession(session) &&
+    !scheduleFlags.includes("Schedule Missing") &&
+    !isPastClockOutCutoff(session, schedule)
+  ) {
+    return "in_progress";
+  }
   if (scheduleFlags.length > 0) return "needs_review";
   if (
     session.status === "completed" &&
     session.clockoutat &&
-    session.networkminutes >= 480
+    session.networkminutes >= REQUIRED_SHIFT_MINUTES
   ) {
     return "complete";
   }
@@ -829,17 +904,24 @@ function getFlags(
   leaveMatches: LeaveRequestRow[],
   dayOffLabel: string,
   attendanceStatus: AttendanceStatus,
+  schedule: ScheduleContext | null,
   scheduleFlags: string[],
 ) {
   const flags = [...scheduleFlags];
 
   if (leaveMatches.length > 0) flags.push("On PTO/Leave");
   if (dayOffLabel !== "None") flags.push("Day Off");
-  if (!session.clockoutat) flags.push("Missing clock out");
   if (session.status === "active") flags.push("Active shift");
   if (session.status === "on_break") flags.push("Currently on break");
   if (session.status === "voided") flags.push("Voided record");
-  if (attendanceStatus === "needs_review" && session.networkminutes < 480) {
+  if (!session.clockoutat && isPastClockOutCutoff(session, schedule)) {
+    flags.push("Missing clock out");
+  }
+  if (
+    attendanceStatus === "needs_review" &&
+    !isOngoingSession(session) &&
+    session.networkminutes < REQUIRED_SHIFT_MINUTES
+  ) {
     flags.push("Under 8 hours");
   }
 
@@ -915,7 +997,7 @@ function getScheduleFlags(
   const clockOut = session.clockoutat ? new Date(session.clockoutat).getTime() : null;
   const flags = [];
 
-  if (clockIn - scheduledStart.getTime() > 5 * 60 * 1000) {
+  if (clockIn - scheduledStart.getTime() > START_GRACE_MINUTES * 60 * 1000) {
     flags.push("Late Log In");
   }
 
@@ -924,6 +1006,25 @@ function getScheduleFlags(
   }
 
   return flags;
+}
+
+function isOngoingSession(session: ClockSessionRow) {
+  return session.status === "active" || session.status === "on_break";
+}
+
+function isPastClockOutCutoff(
+  session: ClockSessionRow,
+  schedule: ScheduleContext | null,
+) {
+  if (session.clockoutat || !schedule) return false;
+
+  const scheduledEnd = getScheduledDateTime(
+    getShiftEndDate(session.workdate, schedule.shiftStart, schedule.shiftEnd),
+    schedule.shiftEnd,
+  );
+  const cutoff = scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
+
+  return Date.now() > cutoff;
 }
 
 function groupByDate(sessions: EnrichedClockSession[]) {
@@ -955,6 +1056,7 @@ function getGroupSummary(sessions: EnrichedClockSession[]) {
   return {
     totalRecords: sessions.length,
     complete: sessions.filter((session) => session.attendanceStatus === "complete").length,
+    inProgress: sessions.filter((session) => session.attendanceStatus === "in_progress").length,
     onLeave: sessions.filter((session) => session.attendanceStatus === "on_leave").length,
     dayOff: sessions.filter((session) => session.attendanceStatus === "day_off").length,
     activeOrBreak: sessions.filter(
@@ -1110,6 +1212,30 @@ function StatusBadge({ status }: { status: ClockSessionStatus }) {
   );
 }
 
+function FlagChip({ label }: { label: string }) {
+  const isReview = [
+    "Missing clock out",
+    "Under 8 hours",
+    "Schedule Missing",
+    "Voided record",
+  ].includes(label);
+  const isActive = ["Active shift", "Currently on break"].includes(label);
+
+  return (
+    <span
+      className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-bold ${
+        isReview
+          ? "border-amber-200 bg-amber-50 text-amber-800"
+          : isActive
+            ? "border-[#b8cae8] bg-[#eef4ff] text-[#001f4d]"
+            : "border-[#efe6b6] bg-[#fffdf2] text-[#001f4d]"
+      }`}
+    >
+      {label}
+    </span>
+  );
+}
+
 function LeaveBadge({
   label,
   dayOffLabel,
@@ -1136,15 +1262,16 @@ function LeaveBadge({
 
 function AttendanceBadge({ status }: { status: AttendanceStatus }) {
   const styles = {
-    complete: "bg-emerald-100 text-emerald-800",
-    on_leave: "bg-[#f2d300] text-[#001f4d]",
-    day_off: "bg-sky-100 text-sky-800",
-    needs_review: "bg-red-100 text-red-700",
+    complete: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    in_progress: "border-[#b8cae8] bg-[#eef4ff] text-[#001f4d]",
+    on_leave: "border-[#f2d300] bg-[#fff7bf] text-[#001f4d]",
+    day_off: "border-sky-200 bg-sky-50 text-sky-800",
+    needs_review: "border-amber-200 bg-amber-50 text-amber-800",
   } satisfies Record<AttendanceStatus, string>;
 
   return (
     <span
-      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${styles[status]}`}
+      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-bold ${styles[status]}`}
     >
       {formatAttendanceStatus(status)}
     </span>
@@ -1245,6 +1372,29 @@ function formatTime(value: string) {
   });
 }
 
+function formatClockOut(session: EnrichedClockSession) {
+  if (session.clockoutat) return formatTime(session.clockoutat);
+  if (isOngoingSession(session) && !isPastClockOutCutoff(session, session.schedule)) {
+    return "In progress";
+  }
+  if (isOngoingSession(session)) return "Not yet clocked out";
+  return "Missing";
+}
+
+function formatClockOutDateTime(session: EnrichedClockSession) {
+  if (session.clockoutat) return formatDateTime(session.clockoutat);
+  if (isOngoingSession(session) && !isPastClockOutCutoff(session, session.schedule)) {
+    return "In progress";
+  }
+  if (isOngoingSession(session)) return "Not yet clocked out";
+  return "Missing";
+}
+
+function formatWorkedMinutes(session: EnrichedClockSession) {
+  if (isOngoingSession(session) && !session.clockoutat) return "In progress";
+  return formatMinutes(session.networkminutes);
+}
+
 function formatMinutes(value: number) {
   const hours = Math.floor(value / 60);
   const minutes = value % 60;
@@ -1260,6 +1410,7 @@ function formatLabel(value: string) {
 
 function formatAttendanceStatus(status: AttendanceStatus) {
   if (status === "complete") return "Complete";
+  if (status === "in_progress") return "In Progress";
   if (status === "on_leave") return "On PTO/Leave";
   if (status === "day_off") return "Day Off";
   return "Needs Review";

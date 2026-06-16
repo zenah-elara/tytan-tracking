@@ -19,7 +19,7 @@ export default async function ManagerAttendanceRecordsPage({
       mode="attendance"
       searchParams={params}
       visibleEmployeeIds={scope.employeeIds}
-      subtitle="Review team attendance by day for today or a selected date."
+      subtitle="Daily team attendance review by date: complete, in progress, leave, day off, or needs review."
     />
   );
 }

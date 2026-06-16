@@ -19,7 +19,7 @@ export default async function ManagerAttendanceLogsPage({
       mode="logs"
       searchParams={params}
       visibleEmployeeIds={scope.employeeIds}
-      subtitle="Review employee-by-employee attendance history for the current month or selected date range."
+      subtitle="Employee-by-employee team attendance history across the selected period."
     />
   );
 }

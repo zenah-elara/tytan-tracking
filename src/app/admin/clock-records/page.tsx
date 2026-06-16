@@ -12,7 +12,7 @@ export default async function AdminClockRecordsPage({ searchParams }: PageProps)
     <ClockRecordsPage
       mode="clock"
       searchParams={params}
-      subtitle="Recent clock records across the team."
+      subtitle="Raw clock audit trail: what employees punched for the selected range."
     />
   );
 }

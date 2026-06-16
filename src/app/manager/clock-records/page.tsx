@@ -17,7 +17,7 @@ export default async function ManagerClockRecordsPage({
       mode="clock"
       searchParams={params}
       visibleEmployeeIds={scope.employeeIds}
-      subtitle="Raw team clock audit logs for the selected date range."
+      subtitle="Raw team clock audit trail: what employees punched for the selected range."
     />
   );
 }

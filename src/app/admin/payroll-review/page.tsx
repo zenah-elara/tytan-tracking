@@ -13,7 +13,7 @@ export default async function AdminPayrollReviewPage({ searchParams }: PageProps
   return (
     <PayrollReviewPage
       searchParams={params}
-      subtitle="Review attendance, leave, day-off, and exception records before future payroll processing."
+      subtitle="Payroll readiness review for salary validation. No pay amounts are calculated."
     />
   );
 }
