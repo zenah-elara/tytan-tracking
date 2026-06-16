@@ -1,5 +1,10 @@
 import Link from "next/link";
+import {
+  AvailabilitySection,
+  buildAvailabilitySummary,
+} from "@/components/dashboard/availability-section";
 import { getCurrentUserProfile } from "@/lib/auth/session";
+import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
 import { createClient } from "@/lib/supabase/server";
 import type { ClockSessionStatus } from "@/types/clock";
 
@@ -8,6 +13,15 @@ type EmployeeRow = {
   full_name: string;
   work_email: string;
   department_id: string | null;
+};
+
+type CompanyEmployeeRow = EmployeeRow & {
+  employment_status: string;
+};
+
+type DepartmentRow = {
+  id: string;
+  name: string;
 };
 
 type ClockSessionRow = {
@@ -44,6 +58,10 @@ type LeaveRequestRow = {
   total_hours: number;
   status: string;
   deletedat: string | null;
+};
+
+type AvailabilityLeaveRequestRow = LeaveRequestRow & {
+  employee_id: string;
 };
 
 type DayOffRosterRow = {
@@ -93,6 +111,10 @@ export default async function EmployeePage() {
     { data: dayOffData },
     { data: scheduleAssignmentData },
     { data: scheduleData },
+    { data: companyEmployeeData },
+    { data: departmentData },
+    { data: availabilityLeaveData },
+    { data: companyDayOffData },
   ] = await Promise.all([
     supabase
       .from("clock_sessions")
@@ -128,6 +150,23 @@ export default async function EmployeePage() {
       .or(`effective_to.is.null,effective_to.gte.${today}`)
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,name,shift_start,shift_end,timezone"),
+    supabase
+      .from("employees")
+      .select("id,full_name,work_email,department_id,employment_status")
+      .order("full_name", { ascending: true }),
+    supabase.from("departments").select("id,name").order("name", { ascending: true }),
+    supabase
+      .from("leave_requests")
+      .select("id,employee_id,leave_type_id,start_date,end_date,total_hours,status,deletedat")
+      .eq("status", "approved")
+      .lte("start_date", today)
+      .gte("end_date", today)
+      .is("deletedat", null)
+      .limit(100),
+    supabase
+      .from("monthly_day_off_rosters")
+      .select("employeeid,month,dayoff")
+      .eq("month", monthStart),
   ]);
   const sessions = (sessionData ?? []) as ClockSessionRow[];
   const balances = (balanceData ?? []) as LeaveBalanceRow[];
@@ -138,6 +177,26 @@ export default async function EmployeePage() {
     (scheduleAssignmentData ?? []) as ScheduleAssignmentRow[];
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
+  const companyEmployees = ((companyEmployeeData ?? []) as CompanyEmployeeRow[])
+    .filter(isRealTytanEmployee)
+    .filter(isEligibleActiveTytanEmployee);
+  const companyEmployeeIds = new Set(companyEmployees.map((row) => row.id));
+  const departments = (departmentData ?? []) as DepartmentRow[];
+  const availabilityLeaveRequests =
+    ((availabilityLeaveData ?? []) as AvailabilityLeaveRequestRow[]).filter((request) =>
+      companyEmployeeIds.has(request.employee_id),
+    );
+  const companyDayOffRosters = ((companyDayOffData ?? []) as DayOffRosterRow[]).filter((row) =>
+    companyEmployeeIds.has(row.employeeid),
+  );
+  const availabilitySummary = buildAvailabilitySummary({
+    employees: companyEmployees,
+    departments,
+    dayOffRosters: companyDayOffRosters,
+    leaveRequests: availabilityLeaveRequests,
+    leaveTypes,
+    today,
+  });
   const openSession =
     sessions.find(
       (session) =>
@@ -193,6 +252,12 @@ export default async function EmployeePage() {
           value={currentSession ? formatMinutes(currentSession.networkminutes) : "0h 0m"}
         />
       </section>
+
+      <AvailabilitySection
+        title="Team Availability Today"
+        summary={availabilitySummary}
+        emptyMessage="Everyone appears available today."
+      />
 
       <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
         <DashboardSection title="Today's Clock">

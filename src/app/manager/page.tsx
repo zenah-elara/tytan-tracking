@@ -1,4 +1,8 @@
 import Link from "next/link";
+import {
+  AvailabilitySection,
+  buildAvailabilitySummary,
+} from "@/components/dashboard/availability-section";
 import { getManagerScope } from "@/lib/auth/manager-scope";
 import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
 import type { ClockSessionStatus } from "@/types/clock";
@@ -68,6 +72,10 @@ type WorkScheduleRow = {
 };
 
 type OperationItem = {
+  sessionId: string;
+  employeeId: string;
+  workdate: string;
+  clockInAt: string;
   employeeName: string;
   departmentName: string;
   clockStatus: string;
@@ -166,18 +174,20 @@ export default async function ManagerPage() {
       request.start_date <= today &&
       request.end_date >= today,
   );
-  const operationItems = scopedSessions.map((session) =>
-    buildOperationItem({
-      session,
-      today,
-      employeeMap,
-      departmentMap,
-      leaveRequests: todaysApprovedLeave,
-      leaveTypeMap,
-      dayOffRosters: scopedDayOffRosters,
-      scheduleAssignments: scopedScheduleAssignments,
-      scheduleMap,
-    }),
+  const operationItems = dedupeOperationItems(
+    scopedSessions.map((session) =>
+      buildOperationItem({
+        session,
+        today,
+        employeeMap,
+        departmentMap,
+        leaveRequests: todaysApprovedLeave,
+        leaveTypeMap,
+        dayOffRosters: scopedDayOffRosters,
+        scheduleAssignments: scopedScheduleAssignments,
+        scheduleMap,
+      }),
+    ),
   );
   const issueItems = operationItems.filter(
     (item) =>
@@ -191,10 +201,20 @@ export default async function ManagerPage() {
   const ptoEmployeeCount = new Set(
     todaysApprovedLeave.map((request) => request.employee_id),
   ).size;
-  const clockedInToday = scopedSessions.filter((session) =>
+  const availabilitySummary = buildAvailabilitySummary({
+    employees: activeEmployees,
+    departments,
+    dayOffRosters: scopedDayOffRosters,
+    leaveRequests: todaysApprovedLeave,
+    leaveTypes,
+    today,
+  });
+  const clockedInToday = countUniqueEmployees(scopedSessions.filter((session) =>
     ["active", "on_break", "completed"].includes(session.status),
-  ).length;
-  const onBreakToday = scopedSessions.filter((session) => session.status === "on_break").length;
+  ));
+  const onBreakToday = countUniqueEmployees(
+    scopedSessions.filter((session) => session.status === "on_break"),
+  );
   const attendanceNeedsReviewToday = operationItems.filter(
     (item) => item.attendanceStatus === "Needs Review",
   ).length;
@@ -223,7 +243,21 @@ export default async function ManagerPage() {
           value={String(pendingSupervisorApprovals.length)}
         />
         <SummaryCard label="PTO/Leave today" value={String(ptoEmployeeCount)} />
+        <SummaryCard
+          label="Team rest day today"
+          value={String(availabilitySummary.restDayItems.length)}
+        />
+        <SummaryCard
+          label="Team unavailable"
+          value={String(availabilitySummary.totalUnavailable)}
+        />
       </section>
+
+      <AvailabilitySection
+        title="Team Availability Today"
+        summary={availabilitySummary}
+        emptyMessage="Everyone on your team appears available today."
+      />
 
       <div className="grid gap-5 xl:grid-cols-[1.35fr_1fr]">
         <DashboardSection
@@ -236,7 +270,7 @@ export default async function ManagerPage() {
           ) : (
             <CompactList>
               {issueItems.slice(0, 5).map((item) => (
-                <ListItem key={`${item.employeeName}-${item.clockStatus}`}>
+                <ListItem key={`${item.employeeId}-${item.workdate}-team-operations`}>
                   <div>
                     <p className="font-bold text-[#001f4d]">{item.employeeName}</p>
                     <p className="mt-1 text-xs text-zinc-500">{item.departmentName}</p>
@@ -290,7 +324,7 @@ export default async function ManagerPage() {
                 .filter((item) => item.attendanceStatus === "Needs Review")
                 .slice(0, 5)
                 .map((item) => (
-                  <ListItem key={`${item.employeeName}-${item.flags.join("-")}`}>
+                  <ListItem key={`${item.employeeId}-${item.workdate}-team-review`}>
                     <div>
                       <p className="font-bold text-[#001f4d]">{item.employeeName}</p>
                       <p className="mt-1 text-xs text-zinc-500">{item.departmentName}</p>
@@ -369,6 +403,10 @@ function buildOperationItem({
   );
 
   return {
+    sessionId: session.id,
+    employeeId: session.employeeid,
+    workdate: session.workdate,
+    clockInAt: session.clockinat,
     employeeName: employee?.full_name ?? "Unknown employee",
     departmentName,
     clockStatus: formatLabel(session.status),
@@ -381,6 +419,40 @@ function buildOperationItem({
           : "No leave/day off",
     flags,
   };
+}
+
+function dedupeOperationItems(items: OperationItem[]) {
+  const byEmployeeDay = new Map<string, OperationItem>();
+
+  for (const item of items) {
+    const key = `${item.employeeId}-${item.workdate}`;
+    const existing = byEmployeeDay.get(key);
+
+    if (!existing || compareOperationPriority(item, existing) < 0) {
+      byEmployeeDay.set(key, item);
+    }
+  }
+
+  return Array.from(byEmployeeDay.values());
+}
+
+function compareOperationPriority(first: OperationItem, second: OperationItem) {
+  const firstPriority = getOperationPriority(first);
+  const secondPriority = getOperationPriority(second);
+
+  if (firstPriority !== secondPriority) return firstPriority - secondPriority;
+
+  return new Date(second.clockInAt).getTime() - new Date(first.clockInAt).getTime();
+}
+
+function getOperationPriority(item: OperationItem) {
+  if (item.clockStatus === "Active" || item.clockStatus === "On Break") return 0;
+  if (item.attendanceStatus === "Needs Review" || item.flags.length > 0) return 1;
+  return 2;
+}
+
+function countUniqueEmployees(sessions: ClockSessionRow[]) {
+  return new Set(sessions.map((session) => session.employeeid)).size;
 }
 
 function DashboardSection({

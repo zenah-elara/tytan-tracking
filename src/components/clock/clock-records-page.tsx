@@ -291,7 +291,7 @@ function PageHeader({
       ? "Clock Records"
       : mode === "attendance"
         ? "Daily Attendance Review"
-        : "Attendance History";
+        : "Attendance Logs";
 
   return (
     <header className="rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
@@ -374,18 +374,19 @@ function EmployeeAttendanceLogs({
 
   return (
     <div className="grid gap-4">
-      {groups.map(([employeeKey, records]) => {
+      {groups.map(([employeeKey, records], index) => {
         const firstRecord = records[0];
         const summary = getGroupSummary(records);
 
         return (
-          <section
+          <details
             key={employeeKey}
-            className="min-w-0 rounded-lg border border-[#efe6b6] bg-white shadow-sm"
+            className="group min-w-0 rounded-lg border border-[#efe6b6] bg-white shadow-sm"
+            open={index === 0}
           >
-            <div className="border-b border-[#efe6b6] px-5 py-4">
+            <summary className="flex cursor-pointer list-none flex-col gap-3 border-b border-[#efe6b6] px-5 py-4 transition hover:bg-[#fffdf2] xl:flex-row xl:items-center xl:justify-between [&::-webkit-details-marker]:hidden">
               <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                <div>
+                <div className="min-w-0">
                   <h2 className="text-base font-black text-[#001f4d]">
                     {firstRecord.employeeName}
                   </h2>
@@ -395,11 +396,20 @@ function EmployeeAttendanceLogs({
                 </div>
                 <SummaryChips summary={summary} label="Days shown" />
               </div>
+              <span className="inline-flex w-fit items-center rounded-full border border-[#efe6b6] bg-[#fffdf2] px-3 py-1 text-xs font-black text-[#001f4d] group-open:hidden">
+                Expand
+              </span>
+              <span className="hidden w-fit items-center rounded-full border border-[#001f4d]/20 bg-[#001f4d] px-3 py-1 text-xs font-black text-white group-open:inline-flex">
+                Collapse
+              </span>
+            </summary>
+            <div className="border-t border-[#efe6b6] bg-[#fffdf2] px-5 py-2 text-xs font-semibold text-[#001f4d]/70">
+              Attendance history details
             </div>
             <div className="max-w-full overflow-x-auto">
               <EmployeeLogTable sessions={records} />
             </div>
-          </section>
+          </details>
         );
       })}
     </div>
