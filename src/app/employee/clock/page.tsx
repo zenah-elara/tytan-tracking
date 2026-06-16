@@ -30,6 +30,9 @@ type ClockSessionRow = {
   networkminutes: number;
 };
 
+type ClockUiState = "not_clocked_in" | "active" | "on_break" | "completed" | "voided";
+type ClockButtonVariant = "start" | "primary" | "secondary" | "neutral";
+
 export default async function EmployeeClockPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const profile = await getCurrentUserProfile();
@@ -67,7 +70,8 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
   const openSession = ((openSessionData ?? []) as ClockSessionRow[])[0] ?? null;
   const todaySessions = (todaySessionData ?? []) as ClockSessionRow[];
   const currentSession = openSession ?? todaySessions[0] ?? null;
-  const currentStatus = getCurrentStatus(currentSession);
+  const clockState = getClockUiState(currentSession);
+  const stateConfig = getClockStateConfig(clockState);
   const displayedWorkDate = currentSession?.workdate ?? today;
   const isOpenPreviousWorkDateSession =
     Boolean(openSession) && openSession?.workdate !== today;
@@ -86,16 +90,24 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
 
       <StatusMessage success={params.success} error={params.error ?? statusError} />
 
-      <section className="rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
+      <section
+        className={`rounded-lg border p-5 shadow-sm ${stateConfig.cardClassName}`}
+      >
         <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-center">
           <div>
-            <p className="text-sm font-bold uppercase text-[#f2d300]">
+            <p className={`text-sm font-black uppercase ${stateConfig.eyebrowClassName}`}>
               Current status
             </p>
-            <h2 className="mt-2 text-3xl font-black tracking-normal text-[#001f4d]">
-              {currentStatus}
-            </h2>
-            <p className="mt-1 text-sm text-zinc-600">
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <h2 className={`text-3xl font-black tracking-normal ${stateConfig.headingClassName}`}>
+                {stateConfig.title}
+              </h2>
+              <StatusBadge label={stateConfig.badge} className={stateConfig.badgeClassName} />
+            </div>
+            <p className={`mt-2 text-sm font-semibold ${stateConfig.copyClassName}`}>
+              {stateConfig.description}
+            </p>
+            <p className={`mt-1 text-sm ${stateConfig.metaClassName}`}>
               Work date: {displayedWorkDate}
             </p>
             {isOpenPreviousWorkDateSession ? (
@@ -109,35 +121,42 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
               </p>
             ) : null}
           </div>
-          <ClockActions session={currentSession} />
+          <ClockActions session={currentSession} state={clockState} />
         </div>
       </section>
 
       <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
-        <TableHeader title={openSession ? "Active session" : "Today's session"} />
+        <TableHeader title={getSessionSummaryTitle(clockState, openSession)} />
         {!currentSession ? (
           <EmptyState message="No active or current-day clock session yet." />
         ) : (
-          <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricCard label="Clock in" value={formatDateTime(currentSession.clockinat)} />
-            <MetricCard
-              label="Clock out"
-              value={
-                currentSession.clockoutat
-                  ? formatDateTime(currentSession.clockoutat)
-                  : "Not clocked out"
-              }
-            />
-            <MetricCard
-              label="Total shift"
-              value={formatMinutes(currentSession.grossminutes)}
-            />
-            <MetricCard
-              label="Break / Net worked"
-              value={`${formatMinutes(currentSession.breakminutes)} / ${formatMinutes(
-                currentSession.networkminutes,
-              )}`}
-            />
+          <div>
+            <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
+              <MetricCard label="Clock in" value={formatDateTime(currentSession.clockinat)} />
+              <MetricCard
+                label="Clock out"
+                value={
+                  currentSession.clockoutat
+                    ? formatDateTime(currentSession.clockoutat)
+                    : "Not yet clocked out"
+                }
+              />
+              <MetricCard
+                label="Total shift"
+                value={formatMinutes(currentSession.grossminutes)}
+              />
+              <MetricCard
+                label="Break / Net worked"
+                value={`${formatMinutes(currentSession.breakminutes)} / ${formatMinutes(
+                  currentSession.networkminutes,
+                )}`}
+              />
+            </div>
+            {clockState === "active" || clockState === "on_break" ? (
+              <p className="border-t border-[#efe6b6] bg-[#fffdf2] px-5 py-3 text-sm font-semibold text-[#001f4d]">
+                Totals update after refresh or clock-out while your shift is active.
+              </p>
+            ) : null}
           </div>
         )}
       </section>
@@ -145,23 +164,41 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
   );
 }
 
-function ClockActions({ session }: { session: ClockSessionRow | null }) {
+function ClockActions({
+  session,
+  state,
+}: {
+  session: ClockSessionRow | null;
+  state: ClockUiState;
+}) {
   const status = session?.status ?? null;
 
   return (
-    <div className="flex flex-wrap gap-3">
-      {!status || status === "completed" || status === "voided" ? (
-        <ClockButton action={clockInAction} label="Clock In" primary />
-      ) : null}
-      {status === "active" ? (
-        <>
-          <ClockButton action={startBreakAction} label="Start Break" />
-          <ClockButton action={clockOutAction} label="Clock Out" primary />
-        </>
-      ) : null}
-      {status === "on_break" ? (
-        <ClockButton action={endBreakAction} label="End Break / Resume Work" primary />
-      ) : null}
+    <div className="grid gap-3">
+      <div className="flex flex-wrap gap-3">
+        {!status || status === "voided" ? (
+          <ClockButton action={clockInAction} label="Clock In" variant="start" />
+        ) : null}
+        {status === "completed" ? (
+          <ClockButton
+            action={clockInAction}
+            label="Clock In New Session"
+            variant="neutral"
+          />
+        ) : null}
+        {status === "active" ? (
+          <>
+            <ClockButton action={startBreakAction} label="Start Break" variant="secondary" />
+            <ClockButton action={clockOutAction} label="Clock Out" variant="primary" />
+          </>
+        ) : null}
+        {status === "on_break" ? (
+          <ClockButton action={endBreakAction} label="Resume Work" variant="start" />
+        ) : null}
+      </div>
+      <p className={`max-w-sm text-sm font-semibold ${getActionHelperClassName(state)}`}>
+        {getActionHelperText(state)}
+      </p>
     </div>
   );
 }
@@ -169,21 +206,26 @@ function ClockActions({ session }: { session: ClockSessionRow | null }) {
 function ClockButton({
   action,
   label,
-  primary,
+  variant,
 }: {
   action: () => Promise<void>;
   label: string;
-  primary?: boolean;
+  variant: ClockButtonVariant;
 }) {
+  const className = {
+    start:
+      "h-11 rounded-lg bg-[#f2d300] px-4 text-sm font-black text-[#001f4d] shadow-sm transition hover:bg-[#ffe44d]",
+    primary:
+      "h-11 rounded-lg border-2 border-[#f2d300] bg-white px-4 text-sm font-black text-[#001f4d] shadow-sm transition hover:bg-[#fff7bf]",
+    secondary:
+      "h-11 rounded-lg border border-white/50 bg-white/10 px-4 text-sm font-bold text-white transition hover:border-[#f2d300] hover:bg-white/20",
+    neutral:
+      "h-11 rounded-lg border border-[#cdbf73] bg-white px-4 text-sm font-bold text-[#001f4d] transition hover:border-[#f2d300] hover:bg-[#fff7bf]",
+  }[variant];
+
   return (
     <form action={action}>
-      <button
-        className={
-          primary
-            ? "h-11 rounded-lg bg-[#f2d300] px-4 text-sm font-bold text-[#001f4d]"
-            : "h-11 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-bold text-zinc-700"
-        }
-      >
+      <button className={className}>
         {label}
       </button>
     </form>
@@ -203,12 +245,121 @@ async function getEmployeeForProfile(profileId: string | undefined) {
   return data as EmployeeRow;
 }
 
-function getCurrentStatus(session: ClockSessionRow | null) {
-  if (!session) return "Not clocked in";
-  if (session.status === "active") return "Clocked in";
-  if (session.status === "on_break") return "On break";
-  if (session.status === "completed") return "Clocked out";
-  return "Voided";
+function getClockUiState(session: ClockSessionRow | null): ClockUiState {
+  if (!session) return "not_clocked_in";
+  if (session.status === "active") return "active";
+  if (session.status === "on_break") return "on_break";
+  if (session.status === "completed") return "completed";
+  return "voided";
+}
+
+function getClockStateConfig(state: ClockUiState) {
+  const configs = {
+    not_clocked_in: {
+      title: "Not clocked in",
+      badge: "Not Clocked In",
+      description: "You have not started your shift yet.",
+      cardClassName: "border-[#efe6b6] bg-white",
+      eyebrowClassName: "text-[#c2a900]",
+      headingClassName: "text-[#001f4d]",
+      copyClassName: "text-zinc-700",
+      metaClassName: "text-zinc-600",
+      badgeClassName: "border-zinc-200 bg-zinc-100 text-zinc-700",
+    },
+    active: {
+      title: "Clocked in",
+      badge: "Clocked In",
+      description: "You are currently clocked in. Clock out only when your shift is complete.",
+      cardClassName: "border-[#001f4d] bg-[#001f4d]",
+      eyebrowClassName: "text-[#f2d300]",
+      headingClassName: "text-white",
+      copyClassName: "text-white",
+      metaClassName: "text-white/75",
+      badgeClassName: "border-[#f2d300] bg-[#f2d300] text-[#001f4d]",
+    },
+    on_break: {
+      title: "On break",
+      badge: "On Break",
+      description: "You are currently on break. Resume work when your break is finished.",
+      cardClassName: "border-[#f2d300] bg-[#fff7bf]",
+      eyebrowClassName: "text-[#001f4d]",
+      headingClassName: "text-[#001f4d]",
+      copyClassName: "text-[#001f4d]",
+      metaClassName: "text-[#001f4d]/70",
+      badgeClassName: "border-[#001f4d] bg-white text-[#001f4d]",
+    },
+    completed: {
+      title: "Shift completed",
+      badge: "Shift Completed",
+      description: "Your shift has been completed.",
+      cardClassName: "border-emerald-200 bg-emerald-50",
+      eyebrowClassName: "text-emerald-700",
+      headingClassName: "text-emerald-900",
+      copyClassName: "text-emerald-900",
+      metaClassName: "text-emerald-800/75",
+      badgeClassName: "border-emerald-200 bg-white text-emerald-800",
+    },
+    voided: {
+      title: "Voided",
+      badge: "Voided",
+      description: "This clock session was voided. Start a new session when needed.",
+      cardClassName: "border-zinc-200 bg-zinc-50",
+      eyebrowClassName: "text-zinc-500",
+      headingClassName: "text-zinc-800",
+      copyClassName: "text-zinc-700",
+      metaClassName: "text-zinc-600",
+      badgeClassName: "border-zinc-200 bg-white text-zinc-700",
+    },
+  } satisfies Record<
+    ClockUiState,
+    {
+      title: string;
+      badge: string;
+      description: string;
+      cardClassName: string;
+      eyebrowClassName: string;
+      headingClassName: string;
+      copyClassName: string;
+      metaClassName: string;
+      badgeClassName: string;
+    }
+  >;
+
+  return configs[state];
+}
+
+function getActionHelperText(state: ClockUiState) {
+  if (state === "not_clocked_in") return "Use Clock In to start your shift.";
+  if (state === "active") return "Your shift is active. Start a break if needed, or clock out when your shift is complete.";
+  if (state === "on_break") return "Resume work when your break is finished.";
+  if (state === "completed") return "Your shift is complete. Start a new session only if you need to clock in again.";
+  return "Start a new session when you are ready to work.";
+}
+
+function getActionHelperClassName(state: ClockUiState) {
+  if (state === "active") return "text-white/85";
+  if (state === "on_break") return "text-[#001f4d]/75";
+  if (state === "completed") return "text-emerald-900/75";
+  return "text-zinc-600";
+}
+
+function getSessionSummaryTitle(
+  state: ClockUiState,
+  openSession: ClockSessionRow | null,
+) {
+  if (state === "active" || state === "on_break") return "Active session";
+  if (openSession) return "Active session";
+  return "Today's session";
+}
+
+function StatusBadge({ label, className }: { label: string; className: string }) {
+  return (
+    <span
+      className={`inline-flex rounded-full border px-3 py-1 text-xs font-black uppercase tracking-[0.08em] ${className}`}
+    >
+      {label}
+    </span>
+  );
 }
 
 function TableHeader({ title }: { title: string }) {
