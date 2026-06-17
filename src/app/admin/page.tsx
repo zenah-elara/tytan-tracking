@@ -139,9 +139,8 @@ type PageProps = {
 export default async function AdminPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const supabase = await createClient();
-  const today = getManilaDateString(new Date());
-  const monthStart = `${today.slice(0, 8)}01`;
-  const accrualMarker = `Monthly accrual ${today.slice(0, 7)} for VL/SL`;
+  const calendarToday = getManilaDateString(new Date());
+  const accrualMarker = `Monthly accrual ${calendarToday.slice(0, 7)} for VL/SL`;
   const [
     { data: employeeData },
     { data: departmentData },
@@ -162,8 +161,8 @@ export default async function AdminPage({ searchParams }: PageProps) {
     supabase
       .from("clock_sessions")
       .select("id,employeeid,workdate,clockinat,clockoutat,status,networkminutes")
-      .eq("workdate", today)
-      .order("clockinat", { ascending: false }),
+      .order("clockinat", { ascending: false })
+      .limit(300),
     supabase
       .from("leave_requests")
       .select("id,employee_id,leave_type_id,start_date,end_date,total_hours,status,processingstatus,deduction_status")
@@ -179,7 +178,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
     supabase
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
-      .eq("month", monthStart),
+      .limit(1000),
     supabase
       .from("employee_schedule_assignments")
       .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
@@ -190,9 +189,6 @@ export default async function AdminPage({ searchParams }: PageProps) {
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
   const employeeIds = getRealEmployeeIds(employees);
   const departments = (departmentData ?? []) as DepartmentRow[];
-  const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
-    employeeIds.has(session.employeeid),
-  );
   const leaveRequests = ((leaveData ?? []) as LeaveRequestRow[]).filter((request) =>
     employeeIds.has(request.employee_id),
   );
@@ -206,6 +202,11 @@ export default async function AdminPage({ searchParams }: PageProps) {
       employeeIds.has(assignment.employee_id),
     );
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
+  const today = getDefaultOperationalDate(schedules);
+  const operationalMonthStart = `${today.slice(0, 8)}01`;
+  const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
+    employeeIds.has(session.employeeid) && isOperationalSessionForDate(session, today),
+  );
   const activeEmployees = employees.filter(isEligibleActiveTytanEmployee);
   const departmentMap = new Map(
     departments.map((department) => [department.id, department.name]),
@@ -213,6 +214,9 @@ export default async function AdminPage({ searchParams }: PageProps) {
   const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
   const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
+  const currentMonthDayOffRosters = dayOffRosters.filter(
+    (row) => row.month === operationalMonthStart,
+  );
   const todaysApprovedLeave = leaveRequests.filter(
     (request) =>
       request.status === "approved" &&
@@ -318,7 +322,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
         />
         <SummaryCard
           label="Day-off roster"
-          value={`${dayOffRosters.length}/${activeEmployees.length}`}
+          value={`${currentMonthDayOffRosters.length}/${activeEmployees.length}`}
         />
       </section>
 
@@ -346,9 +350,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
                   <div className="text-right text-xs text-zinc-600">
                     <p>{item.clockStatus} · {item.attendanceStatus}</p>
                     <p className="mt-1">{item.leaveOrDayOff}</p>
-                    <p className="mt-1 font-semibold text-red-700">
-                      {item.flags.join(", ") || "No flags"}
-                    </p>
+                    <FlagChips flags={item.flags} />
                   </div>
                 </ListItem>
               ))}
@@ -364,8 +366,8 @@ export default async function AdminPage({ searchParams }: PageProps) {
           <div className="grid gap-3">
             <ChecklistItem
               label="Monthly day-off roster configured"
-              ready={dayOffRosters.length >= activeEmployees.length}
-              detail={`${dayOffRosters.length}/${activeEmployees.length} employees`}
+              ready={currentMonthDayOffRosters.length >= activeEmployees.length}
+              detail={`${currentMonthDayOffRosters.length}/${activeEmployees.length} employees`}
             />
             <ChecklistItem
               label="Monthly 8-hour accrual processed"
@@ -598,6 +600,43 @@ function countUniqueEmployees(sessions: ClockSessionRow[]) {
   return new Set(sessions.map((session) => session.employeeid)).size;
 }
 
+function isOperationalSessionForDate(session: ClockSessionRow, date: string) {
+  if (session.workdate === date) return true;
+  if (getManilaDateString(new Date(session.clockinat)) === date) return true;
+  if (
+    session.clockoutat &&
+    getManilaDateString(new Date(session.clockoutat)) === date
+  ) {
+    return true;
+  }
+
+  return (
+    !session.clockoutat &&
+    isOngoingSession(session) &&
+    session.workdate === addDays(date, -1)
+  );
+}
+
+function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date()) {
+  const today = getManilaDateString(now);
+  const previousDate = addDays(today, -1);
+  const nowTime = now.getTime();
+  const isWithinActiveOvernightShift = schedules.some((schedule) => {
+    if (normalizeTime(schedule.shift_end) > normalizeTime(schedule.shift_start)) {
+      return false;
+    }
+
+    const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
+    const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
+    const cutoff =
+      scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
+
+    return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
+  });
+
+  return isWithinActiveOvernightShift ? previousDate : today;
+}
+
 function DashboardSection({
   title,
   href,
@@ -706,6 +745,39 @@ function EmptyState({ message }: { message: string }) {
   return <p className="px-5 py-4 text-sm text-zinc-600">{message}</p>;
 }
 
+function FlagChips({ flags }: { flags: string[] }) {
+  if (flags.length === 0) {
+    return <p className="mt-1 text-xs font-semibold text-zinc-500">No flags</p>;
+  }
+
+  return (
+    <div className="mt-2 flex max-w-sm flex-wrap justify-end gap-1.5">
+      {flags.map((flag) => (
+        <FlagChip key={flag} label={flag} />
+      ))}
+    </div>
+  );
+}
+
+function FlagChip({ label }: { label: string }) {
+  const criticalFlags = ["Missing Clock Out"];
+  const warningFlags = ["Late Log In", "Late Log Out", "Under 8 Hours", "Schedule Missing"];
+  const activeFlags = ["Active shift", "On break", "On PTO/Leave", "Day Off"];
+  const className = criticalFlags.includes(label)
+    ? "border-red-200 bg-red-50 text-red-700"
+    : warningFlags.includes(label)
+      ? "border-amber-200 bg-amber-50 text-amber-800"
+      : activeFlags.includes(label)
+        ? "border-[#b8cae8] bg-[#eef4ff] text-[#001f4d]"
+        : "border-[#efe6b6] bg-[#fffdf2] text-[#001f4d]";
+
+  return (
+    <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-bold ${className}`}>
+      {label}
+    </span>
+  );
+}
+
 function getAttendanceStatus(
   session: ClockSessionRow,
   leaveLabel: string,
@@ -787,7 +859,10 @@ function getDayOffLabel(
   date: string,
   dayOffRosters: DayOffRosterRow[],
 ) {
-  const roster = dayOffRosters.find((row) => row.employeeid === employeeId);
+  const rosterMonth = `${date.slice(0, 8)}01`;
+  const roster = dayOffRosters.find(
+    (row) => row.employeeid === employeeId && row.month === rosterMonth,
+  );
 
   if (!roster) return "None";
 

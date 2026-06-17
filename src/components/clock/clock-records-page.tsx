@@ -43,6 +43,7 @@ type ClockSessionRow = {
   breakminutes: number;
   networkminutes: number;
   notes: string | null;
+  createdat: string;
 };
 
 type LeaveRequestRow = {
@@ -106,7 +107,6 @@ type NotClockedInItem = {
   departmentName: string;
   scheduledStart: Date;
   scheduledStartLabel: string;
-  minutesLate: number;
 };
 
 type ClockRecordsPageProps = {
@@ -141,22 +141,23 @@ export async function ClockRecordsPage({
   visibleEmployeeIds,
 }: ClockRecordsPageProps) {
   const supabase = await createClient();
-  const normalizedSearchParams = withDefaultRange(searchParams, mode);
+  const querySearchParams = withDefaultRange(searchParams, mode);
+  const isAdminClockMode = mode === "clock" && !visibleEmployeeIds;
   let query = supabase
     .from("clock_sessions")
-    .select("id,employeeid,workdate,clockinat,clockoutat,status,grossminutes,breakminutes,networkminutes,notes")
-    .order("workdate", { ascending: false })
+    .select("id,employeeid,workdate,clockinat,clockoutat,status,grossminutes,breakminutes,networkminutes,notes,createdat")
+    .order(isAdminClockMode ? "createdat" : "workdate", { ascending: false })
     .order("clockinat", { ascending: false })
     .limit(300);
 
-  if (normalizedSearchParams.from) {
-    query = query.gte("workdate", normalizedSearchParams.from);
+  if (mode === "logs" && querySearchParams.from) {
+    query = query.gte("workdate", querySearchParams.from);
   }
-  if (normalizedSearchParams.to) {
-    query = query.lte("workdate", normalizedSearchParams.to);
+  if (mode === "logs" && querySearchParams.to) {
+    query = query.lte("workdate", querySearchParams.to);
   }
-  if (isClockStatus(normalizedSearchParams.status)) {
-    query = query.eq("status", normalizedSearchParams.status);
+  if (isClockStatus(querySearchParams.status)) {
+    query = query.eq("status", querySearchParams.status);
   }
 
   const [
@@ -195,7 +196,9 @@ export async function ClockRecordsPage({
       .limit(1000),
   ]);
 
-  const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
+  const allEmployees = (employeeData ?? []) as EmployeeRow[];
+  const employees = allEmployees.filter(isRealTytanEmployee);
+  const allEmployeeMap = new Map(allEmployees.map((employee) => [employee.id, employee]));
   const realEmployeeIds = getRealEmployeeIds(employees);
   const scopeIds = visibleEmployeeIds ? new Set(visibleEmployeeIds) : null;
   const employeeIds = new Set(
@@ -203,7 +206,7 @@ export async function ClockRecordsPage({
   );
   const visibleEmployees = employees.filter((employee) => employeeIds.has(employee.id));
   const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
-    employeeIds.has(session.employeeid),
+    shouldIncludeSession(session, allEmployeeMap, employeeIds, scopeIds),
   );
   const departments = (departmentData ?? []) as DepartmentRow[];
   const approvedLeaves = ((leaveData ?? []) as LeaveRequestRow[]).filter((request) =>
@@ -215,6 +218,7 @@ export async function ClockRecordsPage({
       employeeIds.has(assignment.employee_id),
     );
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
+  const normalizedSearchParams = withDefaultRange(searchParams, mode, schedules);
   const dayOffRosters = ((dayOffData ?? []) as DayOffRosterRow[]).filter((row) =>
     employeeIds.has(row.employeeid),
   );
@@ -235,6 +239,14 @@ export async function ClockRecordsPage({
         scheduleAssignments,
         scheduleMap,
         dayOffRosters,
+      ),
+    )
+    .filter((session) =>
+      (mode !== "clock" && mode !== "attendance") ||
+      matchesOperationalRange(
+        session,
+        normalizedSearchParams.from,
+        normalizedSearchParams.to,
       ),
     )
     .filter((session) => matchesEmployeeSearch(session, normalizedSearchParams.q))
@@ -291,7 +303,7 @@ export async function ClockRecordsPage({
       ) : null}
 
       {mode === "clock" ? (
-        <RecordsCard title="Raw clock logs">
+        <RecordsCard title={`Raw clock logs (${filteredSessions.length})`}>
           {filteredSessions.length === 0 ? (
             <EmptyState message="No raw clock logs match the selected filters." />
           ) : (
@@ -489,17 +501,16 @@ function NotClockedInSection({ items }: { items: NotClockedInItem[] }) {
   return (
     <RecordsCard title="Not Clocked In Yet">
       {items.length === 0 ? (
-        <EmptyState message="No scheduled employees are late to clock in for the selected day." />
+        <EmptyState message="All scheduled employees due to start have clocked in, are on leave, or are on rest day." />
       ) : (
         <div className="max-w-full overflow-x-auto">
-          <table className="min-w-[760px] border-separate border-spacing-0 text-left text-sm">
+          <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
             <thead className="bg-[#001f4d] text-xs uppercase text-white">
               <tr>
-                <th className="w-64 px-4 py-3">Employee</th>
-                <th className="w-52 px-4 py-3">Department</th>
-                <th className="w-40 px-4 py-3">Scheduled start</th>
-                <th className="w-32 px-4 py-3">Minutes late</th>
-                <th className="w-40 px-4 py-3">Status</th>
+                <th className="min-w-52 px-4 py-3">Employee</th>
+                <th className="min-w-40 px-4 py-3">Department</th>
+                <th className="min-w-32 px-4 py-3">Scheduled start</th>
+                <th className="min-w-36 px-4 py-3">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
@@ -515,11 +526,8 @@ function NotClockedInSection({ items }: { items: NotClockedInItem[] }) {
                   <td className="px-4 py-4 text-zinc-600">
                     {item.scheduledStartLabel}
                   </td>
-                  <td className="px-4 py-4 font-semibold text-[#001f4d]">
-                    {item.minutesLate}m
-                  </td>
                   <td className="px-4 py-4">
-                    <FlagChip label="Late Log In" />
+                    <NotClockedInStatusBadge />
                   </td>
                 </tr>
               ))}
@@ -928,15 +936,19 @@ function getNotClockedInItems({
   searchParams: ClockRecordsSearchParams;
 }) {
   const today = getManilaDateString(new Date());
+  const selectedDate =
+    searchParams.from && searchParams.to && searchParams.from === searchParams.to
+      ? searchParams.from
+      : today;
 
-  if (searchParams.from !== today || searchParams.to !== today) {
+  if (searchParams.from !== searchParams.to) {
     return [];
   }
 
   const now = Date.now();
   const clockedEmployeeIds = new Set(
     sessions
-      .filter((session) => session.workdate === today)
+      .filter((session) => matchesOperationalRange(session, selectedDate, selectedDate))
       .map((session) => session.employeeid),
   );
 
@@ -948,14 +960,18 @@ function getNotClockedInItems({
         : "Unassigned";
       const leaveLabel = getEmployeeLeaveLabel(
         employee.id,
-        today,
+        selectedDate,
         approvedLeaves,
         leaveTypeMap,
       );
-      const dayOffLabel = getEmployeeDayOffLabel(employee.id, today, dayOffRosters);
+      const dayOffLabel = getEmployeeDayOffLabel(
+        employee.id,
+        selectedDate,
+        dayOffRosters,
+      );
       const schedule = findScheduleForEmployee(
         employee.id,
-        today,
+        selectedDate,
         scheduleAssignments,
         scheduleMap,
       );
@@ -964,11 +980,9 @@ function getNotClockedInItems({
         return null;
       }
 
-      const scheduledStart = getScheduledDateTime(today, schedule.shiftStart);
-      const lateCutoff =
-        scheduledStart.getTime() + START_GRACE_MINUTES * 60 * 1000;
+      const scheduledStart = getScheduledDateTime(selectedDate, schedule.shiftStart);
 
-      if (now <= lateCutoff) return null;
+      if (now < scheduledStart.getTime()) return null;
 
       const candidate = {
         employeeId: employee.id,
@@ -977,7 +991,6 @@ function getNotClockedInItems({
         departmentName,
         scheduledStart,
         scheduledStartLabel: formatTime(scheduledStart.toISOString()),
-        minutesLate: Math.max(0, Math.floor((now - scheduledStart.getTime()) / 60000)),
       } satisfies NotClockedInItem;
 
       if (!matchesNotClockedInSearch(candidate, searchParams.q)) return null;
@@ -988,7 +1001,10 @@ function getNotClockedInItems({
       return candidate;
     })
     .filter((item): item is NotClockedInItem => item !== null)
-    .sort((first, second) => second.minutesLate - first.minutesLate);
+    .sort(
+      (first, second) =>
+        first.scheduledStart.getTime() - second.scheduledStart.getTime(),
+    );
 }
 
 function enrichSession(
@@ -1273,6 +1289,68 @@ function matchesEmployeeSearch(session: EnrichedClockSession, search?: string) {
   );
 }
 
+function shouldIncludeSession(
+  session: ClockSessionRow,
+  employeeMap: Map<string, EmployeeRow>,
+  employeeIds: Set<string>,
+  scopeIds: Set<string> | null,
+) {
+  if (scopeIds) {
+    return employeeIds.has(session.employeeid);
+  }
+
+  const employee = employeeMap.get(session.employeeid);
+
+  if (!employee) {
+    return true;
+  }
+
+  return isRealTytanEmployee(employee);
+}
+
+function matchesOperationalRange(
+  session: ClockSessionRow & { schedule?: ScheduleContext | null },
+  from?: string,
+  to?: string,
+) {
+  if (!from && !to) return true;
+
+  if (isDateInRange(session.workdate, from, to)) return true;
+
+  if (isDateInRange(getManilaDateString(new Date(session.clockinat)), from, to)) {
+    return true;
+  }
+
+  if (
+    session.clockoutat &&
+    isDateInRange(getManilaDateString(new Date(session.clockoutat)), from, to)
+  ) {
+    return true;
+  }
+
+  if (isDateInRange(getManilaDateString(new Date(session.createdat)), from, to)) {
+    return true;
+  }
+
+  if (isOngoingSession(session) && !session.clockoutat && session.schedule) {
+    const scheduledEndDate = getShiftEndDate(
+      session.workdate,
+      session.schedule.shiftStart,
+      session.schedule.shiftEnd,
+    );
+
+    return isDateInRange(scheduledEndDate, from, to);
+  }
+
+  return false;
+}
+
+function isDateInRange(date: string, from?: string, to?: string) {
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
+}
+
 function matchesNotClockedInSearch(item: NotClockedInItem, search?: string) {
   if (!search) return true;
   const normalizedSearch = search.toLowerCase();
@@ -1482,6 +1560,14 @@ function FlagChip({ label }: { label: string }) {
   );
 }
 
+function NotClockedInStatusBadge() {
+  return (
+    <span className="inline-flex rounded-full border border-[#efe6b6] bg-[#fffdf2] px-2.5 py-1 text-xs font-bold text-[#001f4d]">
+      Not Clocked In
+    </span>
+  );
+}
+
 function LeaveBadge({
   label,
   dayOffLabel,
@@ -1531,10 +1617,14 @@ function escapeCsvCell(value: string) {
 function withDefaultRange(
   searchParams: ClockRecordsSearchParams,
   mode: RecordsMode,
+  schedules: WorkScheduleRow[] = [],
 ) {
   if (searchParams.from || searchParams.to) return searchParams;
 
-  const today = getManilaDateString(new Date());
+  const today =
+    mode === "clock" || mode === "attendance"
+      ? getDefaultOperationalDate(schedules)
+      : getManilaDateString(new Date());
 
   if (mode === "clock") {
     return {
@@ -1557,6 +1647,26 @@ function withDefaultRange(
     from: `${today.slice(0, 8)}01`,
     to: today,
   };
+}
+
+function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date()) {
+  const today = getManilaDateString(now);
+  const previousDate = addDays(today, -1);
+  const nowTime = now.getTime();
+  const isWithinActiveOvernightShift = schedules.some((schedule) => {
+    if (normalizeTime(schedule.shift_end) > normalizeTime(schedule.shift_start)) {
+      return false;
+    }
+
+    const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
+    const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
+    const cutoff =
+      scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
+
+    return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
+  });
+
+  return isWithinActiveOvernightShift ? previousDate : today;
 }
 
 function getManilaDateString(date: Date) {

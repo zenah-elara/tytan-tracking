@@ -71,11 +71,14 @@ export function buildAvailabilitySummary({
   );
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
   const weekday = getManilaWeekday(today);
+  const rosterMonth = `${today.slice(0, 8)}01`;
   const restDayItems = employees
     .filter((employee) =>
       dayOffRosters.some(
         (roster) =>
-          roster.employeeid === employee.id && roster.dayoff === weekday,
+          roster.employeeid === employee.id &&
+          roster.month === rosterMonth &&
+          roster.dayoff === weekday,
       ),
     )
     .map((employee) =>

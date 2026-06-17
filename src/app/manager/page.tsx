@@ -101,8 +101,6 @@ const MISSING_CLOCK_OUT_GRACE_MINUTES = 30;
 export default async function ManagerPage() {
   const scope = await getManagerScope();
   const supabase = await createClient();
-  const today = getManilaDateString(new Date());
-  const monthStart = `${today.slice(0, 8)}01`;
   const [
     { data: employeeData },
     { data: departmentData },
@@ -122,8 +120,8 @@ export default async function ManagerPage() {
     supabase
       .from("clock_sessions")
       .select("id,employeeid,workdate,clockinat,clockoutat,status,networkminutes")
-      .eq("workdate", today)
-      .order("clockinat", { ascending: false }),
+      .order("clockinat", { ascending: false })
+      .limit(300),
     supabase
       .from("leave_requests")
       .select("id,employee_id,leave_type_id,start_date,end_date,total_hours,status,deletedat")
@@ -135,7 +133,7 @@ export default async function ManagerPage() {
     supabase
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
-      .eq("month", monthStart),
+      .limit(1000),
     supabase
       .from("employee_schedule_assignments")
       .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
@@ -152,13 +150,15 @@ export default async function ManagerPage() {
   const scheduleAssignments =
     (scheduleAssignmentData ?? []) as ScheduleAssignmentRow[];
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
+  const today = getDefaultOperationalDate(schedules);
   const scopeEmployeeIds = new Set(scope.employeeIds);
   const scopedEmployees = employees.filter((employee) =>
     scopeEmployeeIds.has(employee.id),
   );
   const scopedEmployeeIds = new Set(scopedEmployees.map((employee) => employee.id));
   const scopedSessions = sessions.filter((session) =>
-    scopedEmployeeIds.has(session.employeeid),
+    scopedEmployeeIds.has(session.employeeid) &&
+    isOperationalSessionForDate(session, today),
   );
   const scopedLeaveRequests = leaveRequests.filter((request) =>
     scopedEmployeeIds.has(request.employee_id),
@@ -288,9 +288,7 @@ export default async function ManagerPage() {
                   <div className="text-right text-xs text-zinc-600">
                     <p>{item.clockStatus} · {item.attendanceStatus}</p>
                     <p className="mt-1">{item.leaveOrDayOff}</p>
-                    <p className="mt-1 font-semibold text-red-700">
-                      {item.flags.join(", ") || "No flags"}
-                    </p>
+                    <FlagChips flags={item.flags} />
                   </div>
                 </ListItem>
               ))}
@@ -341,9 +339,7 @@ export default async function ManagerPage() {
                     </div>
                     <div className="text-right text-xs text-zinc-600">
                       <p>{item.clockStatus}</p>
-                      <p className="mt-1 font-semibold text-red-700">
-                        {item.flags.join(", ") || "Needs review"}
-                      </p>
+                      <FlagChips flags={item.flags} emptyLabel="Needs review" />
                     </div>
                   </ListItem>
                 ))}
@@ -467,6 +463,43 @@ function countUniqueEmployees(sessions: ClockSessionRow[]) {
   return new Set(sessions.map((session) => session.employeeid)).size;
 }
 
+function isOperationalSessionForDate(session: ClockSessionRow, date: string) {
+  if (session.workdate === date) return true;
+  if (getManilaDateString(new Date(session.clockinat)) === date) return true;
+  if (
+    session.clockoutat &&
+    getManilaDateString(new Date(session.clockoutat)) === date
+  ) {
+    return true;
+  }
+
+  return (
+    !session.clockoutat &&
+    isOngoingSession(session) &&
+    session.workdate === addDays(date, -1)
+  );
+}
+
+function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date()) {
+  const today = getManilaDateString(now);
+  const previousDate = addDays(today, -1);
+  const nowTime = now.getTime();
+  const isWithinActiveOvernightShift = schedules.some((schedule) => {
+    if (normalizeTime(schedule.shift_end) > normalizeTime(schedule.shift_start)) {
+      return false;
+    }
+
+    const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
+    const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
+    const cutoff =
+      scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
+
+    return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
+  });
+
+  return isWithinActiveOvernightShift ? previousDate : today;
+}
+
 function DashboardSection({
   title,
   href,
@@ -540,6 +573,45 @@ function LeaveItem({
         {request.start_date}
       </span>
     </ListItem>
+  );
+}
+
+function FlagChips({
+  flags,
+  emptyLabel = "No flags",
+}: {
+  flags: string[];
+  emptyLabel?: string;
+}) {
+  if (flags.length === 0) {
+    return <p className="mt-1 text-xs font-semibold text-zinc-500">{emptyLabel}</p>;
+  }
+
+  return (
+    <div className="mt-2 flex max-w-sm flex-wrap justify-end gap-1.5">
+      {flags.map((flag) => (
+        <FlagChip key={flag} label={flag} />
+      ))}
+    </div>
+  );
+}
+
+function FlagChip({ label }: { label: string }) {
+  const criticalFlags = ["Missing Clock Out"];
+  const warningFlags = ["Late Log In", "Late Log Out", "Under 8 Hours", "Schedule Missing"];
+  const activeFlags = ["Active shift", "On break", "On PTO/Leave", "Day Off"];
+  const className = criticalFlags.includes(label)
+    ? "border-red-200 bg-red-50 text-red-700"
+    : warningFlags.includes(label)
+      ? "border-amber-200 bg-amber-50 text-amber-800"
+      : activeFlags.includes(label)
+        ? "border-[#b8cae8] bg-[#eef4ff] text-[#001f4d]"
+        : "border-[#efe6b6] bg-[#fffdf2] text-[#001f4d]";
+
+  return (
+    <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-bold ${className}`}>
+      {label}
+    </span>
   );
 }
 
@@ -628,7 +700,10 @@ function getDayOffLabel(
   date: string,
   dayOffRosters: DayOffRosterRow[],
 ) {
-  const roster = dayOffRosters.find((row) => row.employeeid === employeeId);
+  const rosterMonth = `${date.slice(0, 8)}01`;
+  const roster = dayOffRosters.find(
+    (row) => row.employeeid === employeeId && row.month === rosterMonth,
+  );
 
   if (!roster) return "None";
 
