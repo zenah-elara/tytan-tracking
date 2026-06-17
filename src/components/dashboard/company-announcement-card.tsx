@@ -24,7 +24,7 @@ export function CompanyAnnouncementCard({
   return (
     <section className="overflow-hidden rounded-lg border border-[#efe6b6] bg-white shadow-sm">
       <div className="border-b border-[#efe6b6] bg-[#fffdf2] px-5 py-4">
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-xs font-black uppercase tracking-[0.14em] text-[#001f4d]/60">
               Company Announcements
@@ -33,29 +33,43 @@ export function CompanyAnnouncementCard({
               {editable ? "Post and manage updates" : "Latest updates"}
             </h2>
           </div>
-          {announcements.length > 0 ? (
-            <span className="w-fit rounded-full border border-[#f2d300] bg-[#fff7bf] px-3 py-1 text-xs font-bold text-[#001f4d]">
-              {announcements.length} active
-            </span>
-          ) : null}
+          <span className="w-fit rounded-full border border-[#f2d300] bg-[#fff7bf] px-3 py-1 text-xs font-bold text-[#001f4d]">
+            {announcements.length} active
+          </span>
         </div>
       </div>
 
       {editable ? (
-        <div className="grid gap-0 lg:grid-cols-[0.9fr_1.1fr]">
-          <div className="border-b border-[#efe6b6] bg-[#fffdf2] p-5 lg:border-b-0 lg:border-r">
-            <AnnouncementMessage success={success} error={error} />
-            <p className="mb-4 text-sm text-zinc-600">
-              Post updates that should appear on employee and manager dashboards.
-            </p>
-            <AnnouncementComposer />
-          </div>
+        <div>
+          <AnnouncementMessage success={success} error={error} />
           <AnnouncementList announcements={announcements} editable />
+          <AnnouncementComposerPanel />
         </div>
       ) : (
         <AnnouncementList announcements={announcements} />
       )}
     </section>
+  );
+}
+
+function AnnouncementComposerPanel() {
+  return (
+    <div className="border-t border-[#efe6b6] bg-[#fffdf2] px-5 py-4">
+      <details className="group rounded-lg border border-[#efe6b6] bg-white">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-black text-[#001f4d] transition hover:bg-[#fffdf2] [&::-webkit-details-marker]:hidden">
+          <span>Post new announcement</span>
+          <span className="rounded-full border border-[#efe6b6] bg-[#fff7bf] px-2 py-0.5 text-xs font-black text-[#001f4d] group-open:hidden">
+            Expand
+          </span>
+          <span className="hidden rounded-full border border-[#001f4d]/20 bg-[#001f4d] px-2 py-0.5 text-xs font-black text-white group-open:inline-flex">
+            Collapse
+          </span>
+        </summary>
+        <div className="border-t border-[#efe6b6] p-4">
+          <AnnouncementComposer />
+        </div>
+      </details>
+    </div>
   );
 }
 
@@ -91,14 +105,14 @@ function AnnouncementList({
 }) {
   if (announcements.length === 0) {
     return (
-      <p className="px-5 py-6 text-sm text-zinc-600">
+      <p className="px-5 py-4 text-sm text-zinc-600">
         No active announcements.
       </p>
     );
   }
 
   return (
-    <div className="grid gap-3 p-5">
+    <div className="grid gap-3 p-4">
       {announcements.map((announcement) => (
         <article
           key={announcement.id}
@@ -138,7 +152,7 @@ function AnnouncementMessage({ success, error }: { success?: string; error?: str
 
   return (
     <p
-      className={`mb-3 rounded-lg border px-4 py-3 text-sm ${
+      className={`mx-5 mt-4 rounded-lg border px-4 py-3 text-sm ${
         error ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"
       }`}
     >

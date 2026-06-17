@@ -99,6 +99,16 @@ type EnrichedClockSession = ClockSessionRow & {
   flags: string[];
 };
 
+type NotClockedInItem = {
+  employeeId: string;
+  employeeName: string;
+  employeeEmail: string;
+  departmentName: string;
+  scheduledStart: Date;
+  scheduledStartLabel: string;
+  minutesLate: number;
+};
+
 type ClockRecordsPageProps = {
   mode: RecordsMode;
   searchParams: ClockRecordsSearchParams;
@@ -122,7 +132,7 @@ const ATTENDANCE_STATUSES: AttendanceStatus[] = [
 
 const REQUIRED_SHIFT_MINUTES = 480;
 const START_GRACE_MINUTES = 5;
-const MISSING_CLOCK_OUT_GRACE_MINUTES = 60;
+const MISSING_CLOCK_OUT_GRACE_MINUTES = 30;
 
 export async function ClockRecordsPage({
   mode,
@@ -236,6 +246,20 @@ export async function ClockRecordsPage({
     .filter((session) =>
       mode === "clock" || matchesLeaveFilter(session, normalizedSearchParams.leave),
     );
+  const notClockedInItems =
+    mode === "clock"
+      ? getNotClockedInItems({
+          employees: visibleEmployees,
+          departmentMap,
+          sessions,
+          approvedLeaves,
+          leaveTypeMap,
+          scheduleAssignments,
+          scheduleMap,
+          dayOffRosters,
+          searchParams: normalizedSearchParams,
+        })
+      : [];
   const csvHref = buildCsvHref(filteredSessions, mode);
 
   return (
@@ -255,7 +279,15 @@ export async function ClockRecordsPage({
       />
 
       {mode !== "logs" ? (
-        <QuickLookSummary sessions={filteredSessions} mode={mode} />
+        <QuickLookSummary
+          sessions={filteredSessions}
+          mode={mode}
+          notClockedInCount={notClockedInItems.length}
+        />
+      ) : null}
+
+      {mode === "clock" ? (
+        <NotClockedInSection items={notClockedInItems} />
       ) : null}
 
       {mode === "clock" ? (
@@ -450,6 +482,52 @@ function ClockTable({ sessions }: { sessions: EnrichedClockSession[] }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+function NotClockedInSection({ items }: { items: NotClockedInItem[] }) {
+  return (
+    <RecordsCard title="Not Clocked In Yet">
+      {items.length === 0 ? (
+        <EmptyState message="No scheduled employees are late to clock in for the selected day." />
+      ) : (
+        <div className="max-w-full overflow-x-auto">
+          <table className="min-w-[760px] border-separate border-spacing-0 text-left text-sm">
+            <thead className="bg-[#001f4d] text-xs uppercase text-white">
+              <tr>
+                <th className="w-64 px-4 py-3">Employee</th>
+                <th className="w-52 px-4 py-3">Department</th>
+                <th className="w-40 px-4 py-3">Scheduled start</th>
+                <th className="w-32 px-4 py-3">Minutes late</th>
+                <th className="w-40 px-4 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100">
+              {items.map((item) => (
+                <tr key={item.employeeId} className="align-top transition hover:bg-[#fffdf2]">
+                  <td className="px-4 py-4">
+                    <p className="font-medium text-zinc-950">{item.employeeName}</p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {item.employeeEmail || "No email"}
+                    </p>
+                  </td>
+                  <td className="px-4 py-4 text-zinc-600">{item.departmentName}</td>
+                  <td className="px-4 py-4 text-zinc-600">
+                    {item.scheduledStartLabel}
+                  </td>
+                  <td className="px-4 py-4 font-semibold text-[#001f4d]">
+                    {item.minutesLate}m
+                  </td>
+                  <td className="px-4 py-4">
+                    <FlagChip label="Late Log In" />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </RecordsCard>
   );
 }
 
@@ -786,17 +864,20 @@ function SummaryChips({
 function QuickLookSummary({
   sessions,
   mode,
+  notClockedInCount,
 }: {
   sessions: EnrichedClockSession[];
   mode: RecordsMode;
+  notClockedInCount?: number;
 }) {
   const summary = getGroupSummary(sessions);
   const clockItems = [
-    ["Total records", sessions.length],
-    ["Completed", sessions.filter((session) => session.status === "completed").length],
-    ["Active", sessions.filter((session) => session.status === "active").length],
+    ["Today's Clock Records", sessions.length],
+    ["Completed Today", sessions.filter((session) => session.status === "completed").length],
+    ["Active Now", sessions.filter((session) => session.status === "active").length],
     ["On break", sessions.filter((session) => session.status === "on_break").length],
     ["Missing out", sessions.filter((session) => session.flags.includes("Missing clock out")).length],
+    ["Not Clocked In", notClockedInCount ?? 0],
   ];
   const attendanceItems = [
     ["Total records", summary.totalRecords],
@@ -823,6 +904,91 @@ function QuickLookSummary({
       ))}
     </section>
   );
+}
+
+function getNotClockedInItems({
+  employees,
+  departmentMap,
+  sessions,
+  approvedLeaves,
+  leaveTypeMap,
+  scheduleAssignments,
+  scheduleMap,
+  dayOffRosters,
+  searchParams,
+}: {
+  employees: EmployeeRow[];
+  departmentMap: Map<string, string>;
+  sessions: ClockSessionRow[];
+  approvedLeaves: LeaveRequestRow[];
+  leaveTypeMap: Map<string, string>;
+  scheduleAssignments: ScheduleAssignmentRow[];
+  scheduleMap: Map<string, WorkScheduleRow>;
+  dayOffRosters: DayOffRosterRow[];
+  searchParams: ClockRecordsSearchParams;
+}) {
+  const today = getManilaDateString(new Date());
+
+  if (searchParams.from !== today || searchParams.to !== today) {
+    return [];
+  }
+
+  const now = Date.now();
+  const clockedEmployeeIds = new Set(
+    sessions
+      .filter((session) => session.workdate === today)
+      .map((session) => session.employeeid),
+  );
+
+  return employees
+    .filter((employee) => !clockedEmployeeIds.has(employee.id))
+    .map((employee) => {
+      const departmentName = employee.department_id
+        ? departmentMap.get(employee.department_id) ?? "Unassigned"
+        : "Unassigned";
+      const leaveLabel = getEmployeeLeaveLabel(
+        employee.id,
+        today,
+        approvedLeaves,
+        leaveTypeMap,
+      );
+      const dayOffLabel = getEmployeeDayOffLabel(employee.id, today, dayOffRosters);
+      const schedule = findScheduleForEmployee(
+        employee.id,
+        today,
+        scheduleAssignments,
+        scheduleMap,
+      );
+
+      if (!schedule || leaveLabel !== "None" || dayOffLabel !== "None") {
+        return null;
+      }
+
+      const scheduledStart = getScheduledDateTime(today, schedule.shiftStart);
+      const lateCutoff =
+        scheduledStart.getTime() + START_GRACE_MINUTES * 60 * 1000;
+
+      if (now <= lateCutoff) return null;
+
+      const candidate = {
+        employeeId: employee.id,
+        employeeName: employee.full_name,
+        employeeEmail: employee.work_email,
+        departmentName,
+        scheduledStart,
+        scheduledStartLabel: formatTime(scheduledStart.toISOString()),
+        minutesLate: Math.max(0, Math.floor((now - scheduledStart.getTime()) / 60000)),
+      } satisfies NotClockedInItem;
+
+      if (!matchesNotClockedInSearch(candidate, searchParams.q)) return null;
+      if (searchParams.department && candidate.departmentName !== searchParams.department) {
+        return null;
+      }
+
+      return candidate;
+    })
+    .filter((item): item is NotClockedInItem => item !== null)
+    .sort((first, second) => second.minutesLate - first.minutesLate);
 }
 
 function enrichSession(
@@ -969,11 +1135,25 @@ function findScheduleForSession(
   scheduleAssignments: ScheduleAssignmentRow[],
   scheduleMap: Map<string, WorkScheduleRow>,
 ): ScheduleContext | null {
+  return findScheduleForEmployee(
+    session.employeeid,
+    session.workdate,
+    scheduleAssignments,
+    scheduleMap,
+  );
+}
+
+function findScheduleForEmployee(
+  employeeId: string,
+  workdate: string,
+  scheduleAssignments: ScheduleAssignmentRow[],
+  scheduleMap: Map<string, WorkScheduleRow>,
+): ScheduleContext | null {
   const matchingAssignments = scheduleAssignments.filter(
     (candidate) =>
-      candidate.employee_id === session.employeeid &&
-      candidate.effective_from <= session.workdate &&
-      (!candidate.effective_to || candidate.effective_to >= session.workdate),
+      candidate.employee_id === employeeId &&
+      candidate.effective_from <= workdate &&
+      (!candidate.effective_to || candidate.effective_to >= workdate),
   );
   const primaryAssignment =
     matchingAssignments.find((assignment) => assignment.is_primary) ??
@@ -1093,6 +1273,15 @@ function matchesEmployeeSearch(session: EnrichedClockSession, search?: string) {
   );
 }
 
+function matchesNotClockedInSearch(item: NotClockedInItem, search?: string) {
+  if (!search) return true;
+  const normalizedSearch = search.toLowerCase();
+  return (
+    item.employeeName.toLowerCase().includes(normalizedSearch) ||
+    item.employeeEmail.toLowerCase().includes(normalizedSearch)
+  );
+}
+
 function matchesDepartment(session: EnrichedClockSession, department?: string) {
   if (!department) return true;
   return session.departmentName === department;
@@ -1110,6 +1299,51 @@ function matchesLeaveFilter(session: EnrichedClockSession, filter?: string) {
   if (filter === "with_leave") return session.leaveLabel !== "None";
   if (filter === "without_leave") return session.leaveLabel === "None";
   return true;
+}
+
+function getEmployeeLeaveLabel(
+  employeeId: string,
+  date: string,
+  approvedLeaves: LeaveRequestRow[],
+  leaveTypeMap: Map<string, string>,
+) {
+  const matches = approvedLeaves.filter(
+    (leave) =>
+      leave.employee_id === employeeId &&
+      leave.start_date <= date &&
+      leave.end_date >= date,
+  );
+
+  if (matches.length === 0) return "None";
+
+  return matches
+    .map((leave) => leaveTypeMap.get(leave.leave_type_id) ?? "Approved Leave")
+    .join(", ");
+}
+
+function getEmployeeDayOffLabel(
+  employeeId: string,
+  date: string,
+  dayOffRosters: DayOffRosterRow[],
+) {
+  const rosterMonth = `${date.slice(0, 8)}01`;
+  const roster = dayOffRosters.find(
+    (candidate) =>
+      candidate.employeeid === employeeId &&
+      candidate.month === rosterMonth,
+  );
+
+  if (!roster) return "None";
+
+  const workday = new Date(`${date}T00:00:00+08:00`).toLocaleDateString(
+    "en-US",
+    {
+      timeZone: "Asia/Manila",
+      weekday: "long",
+    },
+  );
+
+  return roster.dayoff === workday ? roster.dayoff : "None";
 }
 
 function getLeaveCsvValue(session: EnrichedClockSession) {
@@ -1305,7 +1539,7 @@ function withDefaultRange(
   if (mode === "clock") {
     return {
       ...searchParams,
-      from: addDays(today, -6),
+      from: today,
       to: today,
     };
   }

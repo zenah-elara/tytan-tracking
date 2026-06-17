@@ -125,6 +125,10 @@ const QUICK_ACTION_GROUPS = [
   },
 ] as const;
 
+const REQUIRED_SHIFT_MINUTES = 480;
+const START_GRACE_MINUTES = 5;
+const MISSING_CLOCK_OUT_GRACE_MINUTES = 30;
+
 type PageProps = {
   searchParams: Promise<{
     announcement_success?: string;
@@ -525,8 +529,21 @@ function buildOperationItem({
   const dayOffLabel = getDayOffLabel(session.employeeid, today, dayOffRosters);
   const schedule = findScheduleForSession(session, scheduleAssignments, scheduleMap);
   const flags = getScheduleFlags(session, schedule);
-  const attendanceStatus = getAttendanceStatus(session, leaveLabel, dayOffLabel, flags);
-  const allFlags = getFlags(session, leaveLabel, dayOffLabel, attendanceStatus, flags);
+  const attendanceStatus = getAttendanceStatus(
+    session,
+    leaveLabel,
+    dayOffLabel,
+    schedule,
+    flags,
+  );
+  const allFlags = getFlags(
+    session,
+    leaveLabel,
+    dayOffLabel,
+    attendanceStatus,
+    schedule,
+    flags,
+  );
 
   return {
     sessionId: session.id,
@@ -693,12 +710,24 @@ function getAttendanceStatus(
   session: ClockSessionRow,
   leaveLabel: string,
   dayOffLabel: string,
+  schedule: WorkScheduleRow | null,
   scheduleFlags: string[],
 ) {
   if (leaveLabel !== "None") return "On PTO/Leave";
   if (dayOffLabel !== "None") return "Day Off";
+  if (
+    isOngoingSession(session) &&
+    !scheduleFlags.includes("Schedule Missing") &&
+    !isPastClockOutCutoff(session, schedule)
+  ) {
+    return "In Progress";
+  }
   if (scheduleFlags.length > 0) return "Needs Review";
-  if (session.status === "completed" && session.clockoutat && session.networkminutes >= 480) {
+  if (
+    session.status === "completed" &&
+    session.clockoutat &&
+    session.networkminutes >= REQUIRED_SHIFT_MINUTES
+  ) {
     return "Complete";
   }
   return "Needs Review";
@@ -709,16 +738,23 @@ function getFlags(
   leaveLabel: string,
   dayOffLabel: string,
   attendanceStatus: string,
+  schedule: WorkScheduleRow | null,
   scheduleFlags: string[],
 ) {
   const flags = [...scheduleFlags];
 
   if (leaveLabel !== "None") flags.push("On PTO/Leave");
   if (dayOffLabel !== "None") flags.push("Day Off");
-  if (!session.clockoutat) flags.push("Missing Clock Out");
   if (session.status === "active") flags.push("Active shift");
   if (session.status === "on_break") flags.push("On break");
-  if (attendanceStatus === "Needs Review" && session.networkminutes < 480) {
+  if (!session.clockoutat && isPastClockOutCutoff(session, schedule)) {
+    flags.push("Missing Clock Out");
+  }
+  if (
+    attendanceStatus === "Needs Review" &&
+    !isOngoingSession(session) &&
+    session.networkminutes < REQUIRED_SHIFT_MINUTES
+  ) {
     flags.push("Under 8 Hours");
   }
 
@@ -793,15 +829,38 @@ function getScheduleFlags(session: ClockSessionRow, schedule: WorkScheduleRow | 
   const clockOut = session.clockoutat ? new Date(session.clockoutat).getTime() : null;
   const flags = [];
 
-  if (clockIn - scheduledStart.getTime() > 5 * 60 * 1000) {
+  if (clockIn - scheduledStart.getTime() > START_GRACE_MINUTES * 60 * 1000) {
     flags.push("Late Log In");
   }
 
-  if (clockOut && clockOut - scheduledEnd.getTime() >= 30 * 60 * 1000) {
+  if (
+    clockOut &&
+    clockOut - scheduledEnd.getTime() >= MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000
+  ) {
     flags.push("Late Log Out");
   }
 
   return flags;
+}
+
+function isOngoingSession(session: ClockSessionRow) {
+  return session.status === "active" || session.status === "on_break";
+}
+
+function isPastClockOutCutoff(
+  session: ClockSessionRow,
+  schedule: WorkScheduleRow | null,
+) {
+  if (session.clockoutat || !schedule) return false;
+
+  const scheduledEnd = getScheduledDateTime(
+    getShiftEndDate(session.workdate, schedule.shift_start, schedule.shift_end),
+    schedule.shift_end,
+  );
+  const cutoff =
+    scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
+
+  return Date.now() > cutoff;
 }
 
 function getScheduledDateTime(date: string, time: string) {
