@@ -1,6 +1,6 @@
 import { getCurrentUserProfile } from "@/lib/auth/session";
-import { getManagerScope } from "@/lib/auth/manager-scope";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
+import { getLeaveSupervisorApprovalScope } from "@/lib/leave/approval-scope";
 import {
   deleteLeaveRequestAction,
   reviewLeaveRequestAction,
@@ -47,7 +47,7 @@ type LeaveRequestRow = {
 export default async function LeaveApprovalsPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const profile = await getCurrentUserProfile();
-  const scope = await getManagerScope();
+  const scope = await getLeaveSupervisorApprovalScope();
   const isAdmin = profile?.role === "admin";
   const supabase = await createClient();
   const [{ data: requestData, error }, { data: employeeData }, { data: typeData }] =
@@ -106,7 +106,7 @@ export default async function LeaveApprovalsPage({ searchParams }: PageProps) {
         </div>
         {requests.length === 0 ? (
           <p className="px-5 py-8 text-sm text-zinc-600">
-            No leave requests are waiting for supervisor approval.
+            No pending supervisor approvals.
           </p>
         ) : (
           <div className="grid gap-4 p-5">

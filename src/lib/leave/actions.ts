@@ -2,12 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { getManagerScope } from "@/lib/auth/manager-scope";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import {
   isEligibleActiveTytanEmployee,
   isRealTytanEmployee,
 } from "@/lib/employees/filters";
+import { canSupervisorApproveLeaveForEmployee } from "@/lib/leave/approval-scope";
 import { createClient } from "@/lib/supabase/server";
 import type { LeavePolicyType, LeaveRequestStatus } from "@/types/leave";
 
@@ -591,9 +591,7 @@ export async function reviewLeaveRequestAction(formData: FormData) {
       redirectWithStatus(returnPath, "error", "wrong-status");
     }
 
-    const scope = await getManagerScope();
-
-    if (!scope.employeeIds.includes(request.employee_id)) {
+    if (!(await canSupervisorApproveLeaveForEmployee(request.employee_id))) {
       redirectWithStatus(returnPath, "error", "review-not-authorized");
     }
 
@@ -603,6 +601,10 @@ export async function reviewLeaveRequestAction(formData: FormData) {
       supervisorapprovedby: reviewer.id,
     };
   } else if (decision === "admin_approve") {
+    if (currentStatus === "pending_supervisor") {
+      redirectWithStatus(returnPath, "error", "supervisor-first");
+    }
+
     if (currentStatus !== "pending_admin") {
       redirectWithStatus(returnPath, "error", "wrong-status");
     }
@@ -625,9 +627,7 @@ export async function reviewLeaveRequestAction(formData: FormData) {
     }
 
     if (currentStatus === "pending_supervisor") {
-      const scope = await getManagerScope();
-
-      if (!scope.employeeIds.includes(request.employee_id)) {
+      if (!(await canSupervisorApproveLeaveForEmployee(request.employee_id))) {
         redirectWithStatus(returnPath, "error", "review-not-authorized");
       }
     }

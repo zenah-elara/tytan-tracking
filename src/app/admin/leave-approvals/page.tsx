@@ -4,6 +4,7 @@ import {
 } from "@/lib/leave/actions";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
+import { getLeaveSupervisorApprovalScope } from "@/lib/leave/approval-scope";
 import {
   formatLeaveRequestStatus,
   getLeaveApprovalStage,
@@ -52,13 +53,14 @@ export default async function AdminLeaveApprovalsPage({
   const profile = await getCurrentUserProfile();
   const canFinalApprove =
     profile?.email.toLowerCase() === FINAL_LEAVE_APPROVER_EMAIL;
+  const supervisorScope = await getLeaveSupervisorApprovalScope();
   const supabase = await createClient();
   const [{ data: requestData, error }, { data: employeeData }, { data: typeData }] =
     await Promise.all([
       supabase
         .from("leave_requests")
         .select("id,employee_id,leave_type_id,start_date,end_date,total_hours,reason,status,submitted_at,supervisorapprovedat,adminapprovedat,deletedat,processedat,processingstatus")
-        .eq("status", "pending_admin")
+        .in("status", ["pending_supervisor", "pending_admin"])
         .is("deletedat", null)
         .order("submitted_at", { ascending: true }),
       supabase
@@ -71,10 +73,18 @@ export default async function AdminLeaveApprovalsPage({
   const employeeIds = getRealEmployeeIds(employees);
   const requests = ((requestData ?? []) as LeaveRequestRow[]).filter(
     (request) =>
-      request.status === "pending_admin" &&
+      (request.status === "pending_supervisor" ||
+        request.status === "pending_admin") &&
       request.deletedat === null &&
       employeeIds.has(request.employee_id),
   );
+  const pendingSupervisorRequests = requests.filter(
+    (request) => request.status === "pending_supervisor",
+  );
+  const pendingAdminRequests = requests.filter(
+    (request) => request.status === "pending_admin",
+  );
+  const supervisorApprovalEmployeeIds = new Set(supervisorScope.employeeIds);
   const leaveTypes = (typeData ?? []) as LeaveTypeRow[];
   const employeeNames = new Map(
     employees.map((employee) => [
@@ -91,91 +101,150 @@ export default async function AdminLeaveApprovalsPage({
           Leave Queue
         </h1>
         <p className="mt-1 text-sm text-zinc-600">
-          Review leave requests waiting for final admin approval.
+          Track supervisor-stage requests and complete final admin approvals.
         </p>
       </header>
 
       <StatusMessage success={params.success} error={params.error ?? error?.message} />
 
-      <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
-        <div className="border-b border-[#efe6b6] px-5 py-4">
-          <h2 className="text-base font-bold text-[#001f4d]">
-            Waiting for admin approval
-          </h2>
-        </div>
-        {requests.length === 0 ? (
-          <p className="px-5 py-8 text-sm text-zinc-600">
-            No leave requests are waiting for admin approval.
-          </p>
-        ) : (
-          <div className="grid gap-4 p-5">
-            {requests.map((request) => (
-              <article
-                key={request.id}
-                className="rounded-lg border border-[#efe6b6] bg-[#fffdf2] p-4"
-              >
-                <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr_1fr]">
-                  <div>
-                    <p className="font-bold text-[#001f4d]">
-                      {employeeNames.get(request.employee_id) ?? "Employee"}
-                    </p>
-                    <p className="mt-1 text-sm text-zinc-600">
-                      {typeNames.get(request.leave_type_id) ?? "Leave"} -{" "}
-                      {formatHours(request.total_hours)}
-                    </p>
-                    <StatusBadge status={request.status} />
-                    <WorkflowDetails request={request} />
-                  </div>
-                  <p className="text-sm text-zinc-600">
-                    {request.start_date} to {request.end_date}
-                  </p>
-                  <p className="text-sm text-zinc-600">
-                    {request.reason || "No reason provided"}
-                  </p>
-                </div>
-                <div className="mt-4 flex flex-wrap items-center gap-3">
-                  {request.status === "pending_admin" && canFinalApprove ? (
-                    <>
-                      <ReviewButton
-                        requestId={request.id}
-                        decision="admin_approve"
-                        label="Approve"
-                        primary
-                      />
-                      <ReviewButton
-                        requestId={request.id}
-                        decision="reject"
-                        label="Reject"
-                      />
-                    </>
-                  ) : null}
-                  {request.status === "pending_admin" && !canFinalApprove ? (
-                    <p className="rounded-lg border border-[#efe6b6] bg-white px-4 py-2 text-sm font-semibold text-zinc-600">
-                      Waiting for Richelle/Admin final approval.
-                    </p>
-                  ) : null}
-                  <form action={deleteLeaveRequestAction}>
-                    <input
-                      type="hidden"
-                      name="request_id"
-                      value={request.id}
-                    />
-                    <input
-                      type="hidden"
-                      name="return_to"
-                      value="/admin/leave-approvals"
-                    />
-                    <button className="h-10 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-bold text-zinc-700">
-                      Delete only
-                    </button>
-                  </form>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
+      <RequestSection
+        title="Pending Supervisor Approval"
+        emptyMessage="No leave requests are waiting for supervisor approval."
+        requests={pendingSupervisorRequests}
+        employeeNames={employeeNames}
+        typeNames={typeNames}
+        supervisorApprovalEmployeeIds={supervisorApprovalEmployeeIds}
+      />
+
+      <RequestSection
+        title="Pending Admin Approval"
+        emptyMessage="No leave requests are waiting for admin approval."
+        requests={pendingAdminRequests}
+        employeeNames={employeeNames}
+        typeNames={typeNames}
+        canFinalApprove={canFinalApprove}
+      />
     </div>
+  );
+}
+
+function RequestSection({
+  title,
+  emptyMessage,
+  requests,
+  employeeNames,
+  typeNames,
+  supervisorApprovalEmployeeIds,
+  canFinalApprove,
+}: {
+  title: string;
+  emptyMessage: string;
+  requests: LeaveRequestRow[];
+  employeeNames: Map<string, string>;
+  typeNames: Map<string, string>;
+  supervisorApprovalEmployeeIds?: Set<string>;
+  canFinalApprove?: boolean;
+}) {
+  return (
+    <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
+      <div className="border-b border-[#efe6b6] px-5 py-4">
+        <h2 className="text-base font-bold text-[#001f4d]">{title}</h2>
+      </div>
+      {requests.length === 0 ? (
+        <p className="px-5 py-8 text-sm text-zinc-600">{emptyMessage}</p>
+      ) : (
+        <div className="grid gap-4 p-5">
+          {requests.map((request) => (
+            <RequestCard
+              key={request.id}
+              request={request}
+              employeeName={employeeNames.get(request.employee_id) ?? "Employee"}
+              leaveTypeName={typeNames.get(request.leave_type_id) ?? "Leave"}
+              canSupervisorApprove={
+                supervisorApprovalEmployeeIds?.has(request.employee_id) ?? false
+              }
+              canFinalApprove={canFinalApprove ?? false}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RequestCard({
+  request,
+  employeeName,
+  leaveTypeName,
+  canSupervisorApprove,
+  canFinalApprove,
+}: {
+  request: LeaveRequestRow;
+  employeeName: string;
+  leaveTypeName: string;
+  canSupervisorApprove: boolean;
+  canFinalApprove: boolean;
+}) {
+  return (
+    <article className="rounded-lg border border-[#efe6b6] bg-[#fffdf2] p-4">
+      <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr_1fr]">
+        <div>
+          <p className="font-bold text-[#001f4d]">{employeeName}</p>
+          <p className="mt-1 text-sm text-zinc-600">
+            {leaveTypeName} - {formatHours(request.total_hours)}
+          </p>
+          <StatusBadge status={request.status} />
+          <WorkflowDetails request={request} />
+        </div>
+        <p className="text-sm text-zinc-600">
+          {request.start_date} to {request.end_date}
+        </p>
+        <p className="text-sm text-zinc-600">
+          {request.reason || "No reason provided"}
+        </p>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        {request.status === "pending_supervisor" && canSupervisorApprove ? (
+          <>
+            <ReviewButton
+              requestId={request.id}
+              decision="supervisor_approve"
+              label="Send to Admin Approval"
+              primary
+            />
+            <ReviewButton requestId={request.id} decision="reject" label="Reject" />
+          </>
+        ) : null}
+        {request.status === "pending_supervisor" && !canSupervisorApprove ? (
+          <p className="rounded-lg border border-[#efe6b6] bg-white px-4 py-2 text-sm font-semibold text-zinc-600">
+            Waiting for supervisor approval.
+          </p>
+        ) : null}
+        {request.status === "pending_admin" && canFinalApprove ? (
+          <>
+            <ReviewButton
+              requestId={request.id}
+              decision="admin_approve"
+              label="Final Approve"
+              primary
+            />
+            <ReviewButton requestId={request.id} decision="reject" label="Reject" />
+          </>
+        ) : null}
+        {request.status === "pending_admin" && !canFinalApprove ? (
+          <p className="rounded-lg border border-[#efe6b6] bg-white px-4 py-2 text-sm font-semibold text-zinc-600">
+            Waiting for Richelle/Admin final approval.
+          </p>
+        ) : null}
+        <form action={deleteLeaveRequestAction}>
+          <input type="hidden" name="request_id" value={request.id} />
+          <input type="hidden" name="return_to" value="/admin/leave-approvals" />
+          <button className="h-10 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-bold text-zinc-700">
+            Delete only
+          </button>
+        </form>
+      </div>
+    </article>
   );
 }
 
@@ -186,7 +255,7 @@ function ReviewButton({
   primary,
 }: {
   requestId: string;
-  decision: "admin_approve" | "reject";
+  decision: "supervisor_approve" | "admin_approve" | "reject";
   label: string;
   primary?: boolean;
 }) {
@@ -263,6 +332,8 @@ function getSuccessMessage(success: string | undefined) {
 
 function getErrorMessage(error: string) {
   switch (error) {
+    case "supervisor-first":
+      return "This request is still waiting for supervisor approval.";
     case "review-not-authorized":
       return "Only admins can approve leave requests from this page.";
     case "request-not-found":
