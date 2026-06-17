@@ -42,6 +42,12 @@ const BALANCE_BUCKET_BY_REQUEST_TYPE: Record<string, string> = {
   "Emergency Leave": "VL/SL",
   "Floating Leave": "Floating Leave",
 };
+const DUPLICATE_REQUEST_WINDOW_MS = 2 * 60 * 1000;
+
+export type LeaveRequestSubmitState = {
+  status: "idle" | "success" | "error" | "duplicate";
+  message: string;
+};
 
 export async function createLeaveTypeAction(formData: FormData) {
   const name = readRequiredText(formData, "name");
@@ -555,6 +561,103 @@ export async function submitLeaveRequestAction(formData: FormData) {
 
   revalidatePath(EMPLOYEE_LEAVE_PATH);
   redirectWithStatus(EMPLOYEE_LEAVE_PATH, "success", "submitted");
+}
+
+export async function submitLeaveRequestFormAction(
+  _previousState: LeaveRequestSubmitState,
+  formData: FormData,
+): Promise<LeaveRequestSubmitState> {
+  const employee = await getCurrentEmployee();
+  const leaveTypeId = readRequiredText(formData, "leave_type_id");
+  const startDate = readRequiredText(formData, "start_date");
+  const endDate = readRequiredText(formData, "end_date");
+  const requestedHours = readNumber(formData, "requested_hours");
+  const reason = readOptionalText(formData, "reason");
+
+  if (!employee || !leaveTypeId || !startDate || !endDate || requestedHours <= 0) {
+    return {
+      status: "error",
+      message: "Please complete the leave type, dates, and requested hours.",
+    };
+  }
+
+  const supabase = await createClient();
+  const { data: leaveType, error: leaveTypeError } = await supabase
+    .from("leave_types")
+    .select("name,is_active")
+    .eq("id", leaveTypeId)
+    .maybeSingle();
+
+  if (
+    leaveTypeError ||
+    !leaveType?.is_active ||
+    !EMPLOYEE_FILED_LEAVE_TYPE_NAMES.includes(leaveType.name)
+  ) {
+    return {
+      status: "error",
+      message: "Please choose Sick Leave, Vacation Leave, Emergency Leave, or Floating Leave.",
+    };
+  }
+
+  const duplicateSince = new Date(
+    Date.now() - DUPLICATE_REQUEST_WINDOW_MS,
+  ).toISOString();
+  let duplicateQuery = supabase
+    .from("leave_requests")
+    .select("id")
+    .eq("employee_id", employee.id)
+    .eq("leave_type_id", leaveTypeId)
+    .eq("start_date", startDate)
+    .eq("end_date", endDate)
+    .eq("total_hours", requestedHours)
+    .gte("created_at", duplicateSince)
+    .limit(1);
+
+  duplicateQuery = reason
+    ? duplicateQuery.eq("reason", reason)
+    : duplicateQuery.is("reason", null);
+
+  const { data: duplicateRows, error: duplicateError } = await duplicateQuery;
+
+  if (duplicateError) {
+    return {
+      status: "error",
+      message: "We could not confirm whether this request was already submitted. Please try again.",
+    };
+  }
+
+  if ((duplicateRows ?? []).length > 0) {
+    return {
+      status: "duplicate",
+      message: "This leave request was already submitted.",
+    };
+  }
+
+  const { error } = await supabase.from("leave_requests").insert({
+    employee_id: employee.id,
+    leave_type_id: leaveTypeId,
+    start_date: startDate,
+    end_date: endDate,
+    total_hours: requestedHours,
+    reason,
+    status: "pending_supervisor",
+  });
+
+  if (error) {
+    return {
+      status: "error",
+      message: "That request could not be submitted. Please check the form and try again.",
+    };
+  }
+
+  revalidatePath(EMPLOYEE_LEAVE_PATH);
+  revalidatePath(EMPLOYEE_NEW_LEAVE_PATH);
+  revalidatePath(MANAGER_LEAVE_APPROVALS_PATH);
+
+  return {
+    status: "success",
+    message: "Leave request submitted successfully.",
+  };
 }
 
 export async function reviewLeaveRequestAction(formData: FormData) {
