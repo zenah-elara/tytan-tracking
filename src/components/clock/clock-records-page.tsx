@@ -254,7 +254,9 @@ export async function ClockRecordsPage({
         searchParams={normalizedSearchParams}
       />
 
-      <QuickLookSummary sessions={filteredSessions} mode={mode} />
+      {mode !== "logs" ? (
+        <QuickLookSummary sessions={filteredSessions} mode={mode} />
+      ) : null}
 
       {mode === "clock" ? (
         <RecordsCard title="Raw clock logs">

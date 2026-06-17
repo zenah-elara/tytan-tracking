@@ -1,9 +1,11 @@
 import Link from "next/link";
 import type { ClockSessionStatus } from "@/types/clock";
+import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import {
   AvailabilitySection,
   buildAvailabilitySummary,
 } from "@/components/dashboard/availability-section";
+import { CompanyAnnouncementCard } from "@/components/dashboard/company-announcement-card";
 import { getRealEmployeeIds, isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
 import { createClient } from "@/lib/supabase/server";
 
@@ -123,7 +125,15 @@ const QUICK_ACTION_GROUPS = [
   },
 ] as const;
 
-export default async function AdminPage() {
+type PageProps = {
+  searchParams: Promise<{
+    announcement_success?: string;
+    announcement_error?: string;
+  }>;
+};
+
+export default async function AdminPage({ searchParams }: PageProps) {
+  const params = await searchParams;
   const supabase = await createClient();
   const today = getManilaDateString(new Date());
   const monthStart = `${today.slice(0, 8)}01`;
@@ -138,6 +148,7 @@ export default async function AdminPage() {
     { data: dayOffData },
     { data: scheduleAssignmentData },
     { data: scheduleData },
+    announcements,
   ] = await Promise.all([
     supabase
       .from("employees")
@@ -170,6 +181,7 @@ export default async function AdminPage() {
       .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
+    getActiveCompanyAnnouncements(),
   ]);
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
   const employeeIds = getRealEmployeeIds(employees);
@@ -278,6 +290,13 @@ export default async function AdminPage() {
           Operations snapshot for attendance, leave, payroll readiness, and monthly admin tasks.
         </p>
       </header>
+
+      <CompanyAnnouncementCard
+        announcements={announcements}
+        editable
+        success={params.announcement_success}
+        error={params.announcement_error}
+      />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Total employees" value={String(employees.length)} />

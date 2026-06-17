@@ -35,6 +35,7 @@ const EMPLOYEE_FILED_LEAVE_TYPE_NAMES = [
 ];
 const MONTHLY_ACCRUAL_HOURS = 8;
 const MONTHLY_ACCRUAL_LEAVE_TYPE_NAME = "VL/SL";
+const FINAL_LEAVE_APPROVER_EMAIL = "richelle@tytanteams.com";
 const BALANCE_BUCKET_BY_REQUEST_TYPE: Record<string, string> = {
   "Sick Leave": "VL/SL",
   "Vacation Leave": "VL/SL",
@@ -602,8 +603,12 @@ export async function reviewLeaveRequestAction(formData: FormData) {
       supervisorapprovedby: reviewer.id,
     };
   } else if (decision === "admin_approve") {
-    if (currentStatus !== "pending_admin" || reviewer.role !== "admin") {
+    if (currentStatus !== "pending_admin") {
       redirectWithStatus(returnPath, "error", "wrong-status");
+    }
+
+    if (!isFinalLeaveApprover(reviewer)) {
+      redirectWithStatus(returnPath, "error", "review-not-authorized");
     }
 
     updateValues = {
@@ -627,7 +632,7 @@ export async function reviewLeaveRequestAction(formData: FormData) {
       }
     }
 
-    if (currentStatus === "pending_admin" && reviewer.role !== "admin") {
+    if (currentStatus === "pending_admin" && !isFinalLeaveApprover(reviewer)) {
       redirectWithStatus(returnPath, "error", "review-not-authorized");
     }
 
@@ -722,6 +727,16 @@ async function getCurrentEmployee() {
     ...(data as { id: string; full_name: string; work_email: string }),
     role: profile.role,
   };
+}
+
+function isFinalLeaveApprover(reviewer: {
+  role: string;
+  work_email: string;
+}) {
+  return (
+    reviewer.role === "admin" &&
+    reviewer.work_email.toLowerCase() === FINAL_LEAVE_APPROVER_EMAIL
+  );
 }
 
 function revalidateLeavePages() {

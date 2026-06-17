@@ -3,7 +3,9 @@ import {
   AvailabilitySection,
   buildAvailabilitySummary,
 } from "@/components/dashboard/availability-section";
+import { CompanyAnnouncementCard } from "@/components/dashboard/company-announcement-card";
 import { getCurrentUserProfile } from "@/lib/auth/session";
+import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
 import { createClient } from "@/lib/supabase/server";
 import type { ClockSessionStatus } from "@/types/clock";
@@ -115,6 +117,7 @@ export default async function EmployeePage() {
     { data: departmentData },
     { data: availabilityLeaveData },
     { data: companyDayOffData },
+    announcements,
   ] = await Promise.all([
     supabase
       .from("clock_sessions")
@@ -167,6 +170,7 @@ export default async function EmployeePage() {
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
       .eq("month", monthStart),
+    getActiveCompanyAnnouncements(),
   ]);
   const sessions = (sessionData ?? []) as ClockSessionRow[];
   const balances = (balanceData ?? []) as LeaveBalanceRow[];
@@ -240,6 +244,8 @@ export default async function EmployeePage() {
           Today&apos;s clock, leave, and schedule snapshot for {employee.full_name}.
         </p>
       </header>
+
+      <CompanyAnnouncementCard announcements={announcements} />
 
       <section className="grid gap-3 md:grid-cols-3">
         <SummaryCard label="Clock status" value={getCurrentStatus(currentSession)} />

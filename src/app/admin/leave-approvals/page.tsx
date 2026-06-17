@@ -2,7 +2,12 @@ import {
   deleteLeaveRequestAction,
   reviewLeaveRequestAction,
 } from "@/lib/leave/actions";
+import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
+import {
+  formatLeaveRequestStatus,
+  getLeaveApprovalStage,
+} from "@/lib/leave/status-labels";
 import { createClient } from "@/lib/supabase/server";
 import type { LeaveProcessingStatus, LeaveRequestStatus } from "@/types/leave";
 
@@ -38,10 +43,15 @@ type LeaveRequestRow = {
   processingstatus: LeaveProcessingStatus;
 };
 
+const FINAL_LEAVE_APPROVER_EMAIL = "richelle@tytanteams.com";
+
 export default async function AdminLeaveApprovalsPage({
   searchParams,
 }: PageProps) {
   const params = await searchParams;
+  const profile = await getCurrentUserProfile();
+  const canFinalApprove =
+    profile?.email.toLowerCase() === FINAL_LEAVE_APPROVER_EMAIL;
   const supabase = await createClient();
   const [{ data: requestData, error }, { data: employeeData }, { data: typeData }] =
     await Promise.all([
@@ -124,7 +134,7 @@ export default async function AdminLeaveApprovalsPage({
                   </p>
                 </div>
                 <div className="mt-4 flex flex-wrap items-center gap-3">
-                  {request.status === "pending_admin" ? (
+                  {request.status === "pending_admin" && canFinalApprove ? (
                     <>
                       <ReviewButton
                         requestId={request.id}
@@ -138,6 +148,11 @@ export default async function AdminLeaveApprovalsPage({
                         label="Reject"
                       />
                     </>
+                  ) : null}
+                  {request.status === "pending_admin" && !canFinalApprove ? (
+                    <p className="rounded-lg border border-[#efe6b6] bg-white px-4 py-2 text-sm font-semibold text-zinc-600">
+                      Waiting for Richelle/Admin final approval.
+                    </p>
                   ) : null}
                   <form action={deleteLeaveRequestAction}>
                     <input
@@ -207,23 +222,17 @@ function formatHours(value: number) {
   return `${value} hrs`;
 }
 
-function formatLabel(value: string) {
-  return value
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
 function StatusBadge({ status }: { status: LeaveRequestStatus }) {
   return (
     <span className="mt-3 inline-flex rounded-full bg-[#001f4d] px-2.5 py-1 text-xs font-bold text-white">
-      {formatLabel(status)}
+      {formatLeaveRequestStatus(status)}
     </span>
   );
 }
 
 function WorkflowDetails({ request }: { request: LeaveRequestRow }) {
   const details = [
+    getLeaveApprovalStage(request.status),
     request.supervisorapprovedat
       ? `Supervisor approved ${request.supervisorapprovedat}`
       : null,

@@ -3,7 +3,9 @@ import {
   AvailabilitySection,
   buildAvailabilitySummary,
 } from "@/components/dashboard/availability-section";
+import { CompanyAnnouncementCard } from "@/components/dashboard/company-announcement-card";
 import { getManagerScope } from "@/lib/auth/manager-scope";
+import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
 import type { ClockSessionStatus } from "@/types/clock";
 import { createClient } from "@/lib/supabase/server";
@@ -106,6 +108,7 @@ export default async function ManagerPage() {
     { data: dayOffData },
     { data: scheduleAssignmentData },
     { data: scheduleData },
+    announcements,
   ] = await Promise.all([
     supabase
       .from("employees")
@@ -134,6 +137,7 @@ export default async function ManagerPage() {
       .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
+    getActiveCompanyAnnouncements(),
   ]);
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
   const departments = (departmentData ?? []) as DepartmentRow[];
@@ -229,6 +233,8 @@ export default async function ManagerPage() {
           Review today&apos;s team attendance, leave queue, and records needing attention.
         </p>
       </header>
+
+      <CompanyAnnouncementCard announcements={announcements} />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <SummaryCard label="Team members" value={String(activeEmployees.length)} />

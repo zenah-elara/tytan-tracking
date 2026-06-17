@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import { deleteLeaveRequestAction } from "@/lib/leave/actions";
+import {
+  formatLeaveRequestStatus,
+  getLeaveApprovalStage,
+} from "@/lib/leave/status-labels";
 import { createClient } from "@/lib/supabase/server";
 import type { LeaveProcessingStatus, LeaveRequestStatus } from "@/types/leave";
 
@@ -238,7 +242,10 @@ function WorkflowStatus({ request }: { request: LeaveRequestRow }) {
   return (
     <div className="grid gap-1">
       <span className="inline-flex w-fit rounded-full bg-[#001f4d] px-2.5 py-1 text-xs font-bold text-white">
-        {formatLabel(request.status)}
+        {formatLeaveRequestStatus(request.status)}
+      </span>
+      <span className="text-xs text-zinc-500">
+        {getLeaveApprovalStage(request.status)}
       </span>
       {request.processingstatus !== "notprocessed" ? (
         <span className="text-xs text-zinc-500">

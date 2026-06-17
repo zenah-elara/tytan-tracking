@@ -5,6 +5,10 @@ import {
   deleteLeaveRequestAction,
   reviewLeaveRequestAction,
 } from "@/lib/leave/actions";
+import {
+  formatLeaveRequestStatus,
+  getLeaveApprovalStage,
+} from "@/lib/leave/status-labels";
 import { createClient } from "@/lib/supabase/server";
 import type { LeaveProcessingStatus, LeaveRequestStatus } from "@/types/leave";
 
@@ -215,23 +219,17 @@ function formatHours(value: number) {
   return `${value} hrs`;
 }
 
-function formatLabel(value: string) {
-  return value
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
 function StatusBadge({ status }: { status: LeaveRequestStatus }) {
   return (
     <span className="mt-3 inline-flex rounded-full bg-[#001f4d] px-2.5 py-1 text-xs font-bold text-white">
-      {formatLabel(status)}
+      {formatLeaveRequestStatus(status)}
     </span>
   );
 }
 
 function WorkflowDetails({ request }: { request: LeaveRequestRow }) {
   const details = [
+    getLeaveApprovalStage(request.status),
     request.supervisorapprovedat
       ? `Supervisor approved ${request.supervisorapprovedat}`
       : null,
