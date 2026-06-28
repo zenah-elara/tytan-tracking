@@ -1,4 +1,9 @@
-import type { ClockSessionStatus } from "@/types/clock";
+import { AttendanceNotesEditor } from "@/components/clock/attendance-review-editor";
+import { AttendanceStatusEditor } from "@/components/clock/attendance-status-editor";
+import type {
+  AttendanceReviewStatus,
+  ClockSessionStatus,
+} from "@/types/clock";
 import {
   getCreditedClockMinutes,
   getRenderedGrossMinutes,
@@ -84,8 +89,16 @@ type WorkScheduleRow = {
   shift_end: string;
 };
 
+type AttendanceReviewRow = {
+  clocksessionid: string;
+  reviewstatus: AttendanceReviewStatus | null;
+  notes: string | null;
+  reviewedat: string;
+};
+
 type DailyPayrollRecord = {
   key: string;
+  clockSessionId: string | null;
   employeeId: string;
   employeeName: string;
   employeeEmail: string;
@@ -101,6 +114,9 @@ type DailyPayrollRecord = {
   leaveLabel: string;
   dayOffLabel: string;
   flags: string[];
+  adminReviewStatus: AttendanceReviewStatus | null;
+  adminReviewNotes: string | null;
+  adminReviewedAt: string | null;
 };
 
 type EmployeePayrollGroup = {
@@ -138,10 +154,12 @@ export async function PayrollReviewPage({
   searchParams,
   subtitle,
   visibleEmployeeIds,
+  canEditReviews = false,
 }: {
   searchParams: PayrollReviewSearchParams;
   subtitle: string;
   visibleEmployeeIds?: string[];
+  canEditReviews?: boolean;
 }) {
   const supabase = await createClient();
   const normalizedSearchParams = withDefaultRange(searchParams);
@@ -169,6 +187,7 @@ export async function PayrollReviewPage({
     { data: dayOffData },
     { data: scheduleAssignmentData },
     { data: scheduleData },
+    { data: reviewData },
   ] = await Promise.all([
     sessionQuery,
     supabase
@@ -195,6 +214,10 @@ export async function PayrollReviewPage({
       .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
+    supabase
+      .from("attendance_record_reviews")
+      .select("clocksessionid,reviewstatus,notes,reviewedat")
+      .limit(2000),
   ]);
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
   const realEmployeeIds = getRealEmployeeIds(employees);
@@ -225,6 +248,12 @@ export async function PayrollReviewPage({
   const employeeMap = new Map(visibleEmployees.map((employee) => [employee.id, employee]));
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
   const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
+  const reviewMap = new Map(
+    ((reviewData ?? []) as AttendanceReviewRow[]).map((review) => [
+      review.clocksessionid,
+      review,
+    ]),
+  );
   const records = buildDailyRecords({
     sessions,
     employees: visibleEmployees,
@@ -235,6 +264,7 @@ export async function PayrollReviewPage({
     dayOffRosters,
     scheduleAssignments,
     scheduleMap,
+    reviewMap,
     from: normalizedSearchParams.from,
     to: normalizedSearchParams.to,
   })
@@ -285,7 +315,11 @@ export async function PayrollReviewPage({
       ) : (
         <section className="grid gap-4">
           {groups.map((group) => (
-            <EmployeePayrollCard key={group.employeeId} group={group} />
+            <EmployeePayrollCard
+              key={group.employeeId}
+              group={group}
+              canEditReviews={canEditReviews}
+            />
           ))}
         </section>
       )}
@@ -321,7 +355,13 @@ function PayrollQuickLook({ groups }: { groups: EmployeePayrollGroup[] }) {
   );
 }
 
-function EmployeePayrollCard({ group }: { group: EmployeePayrollGroup }) {
+function EmployeePayrollCard({
+  group,
+  canEditReviews,
+}: {
+  group: EmployeePayrollGroup;
+  canEditReviews: boolean;
+}) {
   return (
     <details className="min-w-0 rounded-lg border border-[#efe6b6] bg-white shadow-sm" open>
       <summary className="cursor-pointer list-none border-b border-[#efe6b6] px-5 py-4">
@@ -338,7 +378,7 @@ function EmployeePayrollCard({ group }: { group: EmployeePayrollGroup }) {
         </div>
       </summary>
       <div className="max-w-full overflow-x-auto">
-        <table className="min-w-[980px] border-separate border-spacing-0 text-left text-sm">
+        <table className="min-w-[1260px] border-separate border-spacing-0 text-left text-sm">
           <thead className="bg-[#001f4d] text-xs uppercase text-white">
             <tr>
               <th className="px-5 py-3">Date</th>
@@ -349,6 +389,7 @@ function EmployeePayrollCard({ group }: { group: EmployeePayrollGroup }) {
               <th className="px-5 py-3">PTO/Leave</th>
               <th className="px-5 py-3">Day Off</th>
               <th className="px-5 py-3">Flags</th>
+              <th className="px-5 py-3">Notes</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100">
@@ -357,6 +398,17 @@ function EmployeePayrollCard({ group }: { group: EmployeePayrollGroup }) {
                 <td className="px-5 py-4 text-zinc-600">{record.date}</td>
                 <td className="px-5 py-4">
                   <StatusBadge status={record.attendanceStatus} />
+                  {record.adminReviewStatus ? (
+                    <p className="mt-1 text-[11px] font-bold uppercase text-[#001f4d]/60">
+                      Admin reviewed
+                    </p>
+                  ) : null}
+                  {canEditReviews && record.clockSessionId ? (
+                    <AttendanceStatusEditor
+                      clockSessionId={record.clockSessionId}
+                      reviewStatus={record.adminReviewStatus}
+                    />
+                  ) : null}
                 </td>
                 <td className="px-5 py-4 text-zinc-600">
                   {record.clockIn ? formatTime(record.clockIn) : "None"}
@@ -371,6 +423,26 @@ function EmployeePayrollCard({ group }: { group: EmployeePayrollGroup }) {
                 <td className="px-5 py-4 text-zinc-600">{record.dayOffLabel}</td>
                 <td className="px-5 py-4 text-zinc-600">
                   <FlagChips flags={record.flags} />
+                </td>
+                <td className="min-w-72 px-5 py-4 text-zinc-600">
+                  {record.adminReviewNotes ? (
+                    <p className="max-w-72 whitespace-pre-wrap">
+                      {record.adminReviewNotes}
+                    </p>
+                  ) : (
+                    <span className="text-zinc-400">None</span>
+                  )}
+                  {record.adminReviewedAt ? (
+                    <p className="mt-1 text-xs font-semibold text-zinc-500">
+                      Reviewed {formatDateTime(record.adminReviewedAt)}
+                    </p>
+                  ) : null}
+                  {canEditReviews && record.clockSessionId ? (
+                    <AttendanceNotesEditor
+                      clockSessionId={record.clockSessionId}
+                      notes={record.adminReviewNotes}
+                    />
+                  ) : null}
                 </td>
               </tr>
             ))}
@@ -489,6 +561,7 @@ function buildDailyRecords({
   dayOffRosters,
   scheduleAssignments,
   scheduleMap,
+  reviewMap,
   from,
   to,
 }: {
@@ -501,6 +574,7 @@ function buildDailyRecords({
   dayOffRosters: DayOffRosterRow[];
   scheduleAssignments: ScheduleAssignmentRow[];
   scheduleMap: Map<string, WorkScheduleRow>;
+  reviewMap: Map<string, AttendanceReviewRow>;
   from: string;
   to: string;
 }) {
@@ -520,6 +594,7 @@ function buildDailyRecords({
       dayOffRosters,
       scheduleAssignments,
       scheduleMap,
+      reviewMap,
     });
     records.set(record.key, record);
   }
@@ -543,6 +618,7 @@ function buildDailyRecords({
             dayOffRosters,
             scheduleAssignments,
             scheduleMap,
+            reviewMap,
           }),
         );
       }
@@ -566,6 +642,7 @@ function buildRecordForDate({
   dayOffRosters,
   scheduleAssignments,
   scheduleMap,
+  reviewMap,
 }: {
   employee: EmployeeRow;
   date: string;
@@ -576,6 +653,7 @@ function buildRecordForDate({
   dayOffRosters: DayOffRosterRow[];
   scheduleAssignments: ScheduleAssignmentRow[];
   scheduleMap: Map<string, WorkScheduleRow>;
+  reviewMap: Map<string, AttendanceReviewRow>;
 }): DailyPayrollRecord {
   const leaveLabel = getLeaveLabel(employee.id, date, approvedLeaves, leaveTypeMap);
   const dayOffLabel = getDayOffLabel(employee.id, date, dayOffRosters);
@@ -583,7 +661,7 @@ function buildRecordForDate({
     ? findScheduleForSession(session, scheduleAssignments, scheduleMap)
     : null;
   const scheduleFlags = session ? getScheduleFlags(session, schedule) : [];
-  const attendanceStatus = getAttendanceStatus(
+  const computedAttendanceStatus = getAttendanceStatus(
     session,
     leaveLabel,
     dayOffLabel,
@@ -594,16 +672,19 @@ function buildRecordForDate({
     session,
     leaveLabel,
     dayOffLabel,
-    attendanceStatus,
+    computedAttendanceStatus,
     schedule,
     scheduleFlags,
   );
+  const review = session ? reviewMap.get(session.id) : undefined;
+  const attendanceStatus = review?.reviewstatus ?? computedAttendanceStatus;
   const departmentName = employee.department_id
     ? departmentMap.get(employee.department_id) ?? "Unassigned"
     : "Unassigned";
 
   return {
     key: `${employee.id}:${date}`,
+    clockSessionId: session?.id ?? null,
     employeeId: employee.id,
     employeeName: employee.full_name,
     employeeEmail: employee.work_email,
@@ -619,6 +700,9 @@ function buildRecordForDate({
     leaveLabel,
     dayOffLabel,
     flags,
+    adminReviewStatus: review?.reviewstatus ?? null,
+    adminReviewNotes: review?.notes ?? null,
+    adminReviewedAt: review?.reviewedat ?? null,
   };
 }
 
@@ -862,6 +946,7 @@ function buildCsvHref(groups: EmployeePayrollGroup[]) {
     "PTO/Leave",
     "Day Off",
     "Flags",
+    "Notes",
   ];
   const rows = groups.flatMap((group) =>
     group.records.map((record) => [
@@ -877,6 +962,7 @@ function buildCsvHref(groups: EmployeePayrollGroup[]) {
       record.leaveLabel,
       record.dayOffLabel,
       record.flags.join("; "),
+      record.adminReviewNotes ?? "",
     ]),
   );
   const csv = [headers, ...rows]

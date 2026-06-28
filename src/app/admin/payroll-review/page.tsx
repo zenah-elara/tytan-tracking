@@ -13,6 +13,7 @@ export default async function AdminPayrollReviewPage({ searchParams }: PageProps
   return (
     <PayrollReviewPage
       searchParams={params}
+      canEditReviews
       subtitle="Payroll readiness review for salary validation. No pay amounts are calculated."
     />
   );

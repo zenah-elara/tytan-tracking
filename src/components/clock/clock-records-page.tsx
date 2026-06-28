@@ -1,4 +1,9 @@
-import type { ClockSessionStatus } from "@/types/clock";
+import { AttendanceNotesEditor } from "@/components/clock/attendance-review-editor";
+import { AttendanceStatusEditor } from "@/components/clock/attendance-status-editor";
+import type {
+  AttendanceReviewStatus,
+  ClockSessionStatus,
+} from "@/types/clock";
 import {
   getCreditedClockMinutes,
   getRenderedGrossMinutes,
@@ -90,6 +95,13 @@ type DayOffRosterRow = {
   dayoff: string;
 };
 
+type AttendanceReviewRow = {
+  clocksessionid: string;
+  reviewstatus: AttendanceReviewStatus | null;
+  notes: string | null;
+  reviewedat: string;
+};
+
 type ScheduleContext = {
   scheduleName: string;
   shiftStart: string;
@@ -104,6 +116,9 @@ type EnrichedClockSession = ClockSessionRow & {
   dayOffLabel: string;
   schedule: ScheduleContext | null;
   attendanceStatus: AttendanceStatus;
+  adminReviewStatus: AttendanceReviewStatus | null;
+  adminReviewNotes: string | null;
+  adminReviewedAt: string | null;
   flags: string[];
 };
 
@@ -121,6 +136,7 @@ type ClockRecordsPageProps = {
   searchParams: ClockRecordsSearchParams;
   subtitle: string;
   visibleEmployeeIds?: string[];
+  canEditReviews?: boolean;
 };
 
 const CLOCK_STATUSES: ClockSessionStatus[] = [
@@ -146,6 +162,7 @@ export async function ClockRecordsPage({
   searchParams,
   subtitle,
   visibleEmployeeIds,
+  canEditReviews = false,
 }: ClockRecordsPageProps) {
   const supabase = await createClient();
   const querySearchParams = withDefaultRange(searchParams, mode);
@@ -176,6 +193,7 @@ export async function ClockRecordsPage({
     { data: scheduleAssignmentData },
     { data: scheduleData },
     { data: dayOffData },
+    { data: reviewData },
   ] = await Promise.all([
     query,
     supabase
@@ -200,6 +218,10 @@ export async function ClockRecordsPage({
     supabase
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
+      .limit(1000),
+    supabase
+      .from("attendance_record_reviews")
+      .select("clocksessionid,reviewstatus,notes,reviewedat")
       .limit(1000),
   ]);
 
@@ -229,6 +251,12 @@ export async function ClockRecordsPage({
   const dayOffRosters = ((dayOffData ?? []) as DayOffRosterRow[]).filter((row) =>
     employeeIds.has(row.employeeid),
   );
+  const reviewMap = new Map(
+    ((reviewData ?? []) as AttendanceReviewRow[]).map((review) => [
+      review.clocksessionid,
+      review,
+    ]),
+  );
   const employeeMap = new Map(visibleEmployees.map((employee) => [employee.id, employee]));
   const departmentMap = new Map(
     departments.map((department) => [department.id, department.name]),
@@ -246,6 +274,7 @@ export async function ClockRecordsPage({
         scheduleAssignments,
         scheduleMap,
         dayOffRosters,
+        reviewMap,
       ),
     )
     .filter((session) =>
@@ -322,10 +351,18 @@ export async function ClockRecordsPage({
       ) : null}
 
       {mode === "attendance" ? (
-        <DailyAttendanceReview sessions={filteredSessions} />
+        <DailyAttendanceReview
+          sessions={filteredSessions}
+          canEditReviews={canEditReviews}
+        />
       ) : null}
 
-      {mode === "logs" ? <EmployeeAttendanceLogs sessions={filteredSessions} /> : null}
+      {mode === "logs" ? (
+        <EmployeeAttendanceLogs
+          sessions={filteredSessions}
+          canEditReviews={canEditReviews}
+        />
+      ) : null}
     </div>
   );
 }
@@ -369,8 +406,10 @@ function PageHeader({
 
 function DailyAttendanceReview({
   sessions,
+  canEditReviews,
 }: {
   sessions: EnrichedClockSession[];
+  canEditReviews: boolean;
 }) {
   const groups = groupByDate(sessions);
 
@@ -401,7 +440,10 @@ function DailyAttendanceReview({
               </div>
             </div>
             <div className="max-w-full overflow-x-auto">
-              <DailyAttendanceTable sessions={records} />
+              <DailyAttendanceTable
+                sessions={records}
+                canEditReviews={canEditReviews}
+              />
             </div>
           </section>
         );
@@ -412,8 +454,10 @@ function DailyAttendanceReview({
 
 function EmployeeAttendanceLogs({
   sessions,
+  canEditReviews,
 }: {
   sessions: EnrichedClockSession[];
+  canEditReviews: boolean;
 }) {
   const groups = groupByEmployee(sessions);
 
@@ -460,7 +504,10 @@ function EmployeeAttendanceLogs({
               Attendance history details
             </div>
             <div className="max-w-full overflow-x-auto">
-              <EmployeeLogTable sessions={records} />
+              <EmployeeLogTable
+                sessions={records}
+                canEditReviews={canEditReviews}
+              />
             </div>
           </details>
         );
@@ -471,7 +518,7 @@ function EmployeeAttendanceLogs({
 
 function ClockTable({ sessions }: { sessions: EnrichedClockSession[] }) {
   return (
-    <table className="min-w-[1080px] border-separate border-spacing-0 text-left text-sm">
+    <table className="min-w-[1320px] border-separate border-spacing-0 text-left text-sm">
       <thead className="bg-[#001f4d] text-xs uppercase text-white">
         <tr>
           <th className="w-56 px-4 py-3">Employee</th>
@@ -483,7 +530,8 @@ function ClockTable({ sessions }: { sessions: EnrichedClockSession[] }) {
           <th className="w-28 px-4 py-3">Break</th>
           <th className="w-32 px-4 py-3">Net worked</th>
           <th className="w-32 px-4 py-3">Raw status</th>
-          <th className="w-56 px-4 py-3">Notes / flags</th>
+          <th className="w-56 px-4 py-3">Flags</th>
+          <th className="w-64 px-4 py-3">Notes</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-zinc-100">
@@ -497,6 +545,7 @@ function ClockTable({ sessions }: { sessions: EnrichedClockSession[] }) {
               <StatusBadge status={session.status} />
             </td>
             <FlagsCell session={session} />
+            <NotesCell session={session} canEdit={false} />
           </tr>
         ))}
       </tbody>
@@ -546,9 +595,15 @@ function NotClockedInSection({ items }: { items: NotClockedInItem[] }) {
   );
 }
 
-function DailyAttendanceTable({ sessions }: { sessions: EnrichedClockSession[] }) {
+function DailyAttendanceTable({
+  sessions,
+  canEditReviews,
+}: {
+  sessions: EnrichedClockSession[];
+  canEditReviews: boolean;
+}) {
   return (
-    <table className="min-w-[980px] border-separate border-spacing-0 text-left text-sm">
+    <table className="min-w-[1240px] border-separate border-spacing-0 text-left text-sm">
       <thead className="bg-[#001f4d] text-xs uppercase text-white">
         <tr>
           <th className="w-56 px-4 py-3">Employee</th>
@@ -558,7 +613,8 @@ function DailyAttendanceTable({ sessions }: { sessions: EnrichedClockSession[] }
           <th className="w-32 px-4 py-3">Net worked</th>
           <th className="w-36 px-4 py-3">PTO/Leave</th>
           <th className="w-36 px-4 py-3">Attendance</th>
-          <th className="w-56 px-4 py-3">Notes / flags</th>
+          <th className="w-56 px-4 py-3">Flags</th>
+          <th className="w-72 px-4 py-3">Notes</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-zinc-100">
@@ -581,10 +637,9 @@ function DailyAttendanceTable({ sessions }: { sessions: EnrichedClockSession[] }
                 dayOffLabel={session.dayOffLabel}
               />
             </td>
-            <td className="px-4 py-4">
-              <AttendanceBadge status={session.attendanceStatus} />
-            </td>
+            <AttendanceCell session={session} canEdit={canEditReviews} />
             <FlagsCell session={session} />
+            <NotesCell session={session} canEdit={canEditReviews} />
           </tr>
         ))}
       </tbody>
@@ -592,9 +647,15 @@ function DailyAttendanceTable({ sessions }: { sessions: EnrichedClockSession[] }
   );
 }
 
-function EmployeeLogTable({ sessions }: { sessions: EnrichedClockSession[] }) {
+function EmployeeLogTable({
+  sessions,
+  canEditReviews,
+}: {
+  sessions: EnrichedClockSession[];
+  canEditReviews: boolean;
+}) {
   return (
-    <table className="min-w-[1040px] border-separate border-spacing-0 text-left text-sm">
+    <table className="min-w-[1320px] border-separate border-spacing-0 text-left text-sm">
       <thead className="bg-[#001f4d] text-xs uppercase text-white">
         <tr>
           <th className="w-32 px-4 py-3">Date</th>
@@ -605,16 +666,15 @@ function EmployeeLogTable({ sessions }: { sessions: EnrichedClockSession[] }) {
           <th className="w-28 px-4 py-3">Break</th>
           <th className="w-32 px-4 py-3">Net worked</th>
           <th className="w-36 px-4 py-3">PTO/Leave</th>
-          <th className="w-56 px-4 py-3">Notes / flags</th>
+          <th className="w-56 px-4 py-3">Flags</th>
+          <th className="w-72 px-4 py-3">Notes</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-zinc-100">
         {sessions.map((session) => (
           <tr key={session.id} className="align-top transition hover:bg-[#fffdf2]">
             <td className="px-4 py-4 text-zinc-600">{session.workdate}</td>
-            <td className="px-4 py-4">
-              <AttendanceBadge status={session.attendanceStatus} />
-            </td>
+            <AttendanceCell session={session} canEdit={canEditReviews} />
             <td className="px-4 py-4 text-zinc-600">
               {formatTime(session.clockinat)}
             </td>
@@ -635,6 +695,7 @@ function EmployeeLogTable({ sessions }: { sessions: EnrichedClockSession[] }) {
               />
             </td>
             <FlagsCell session={session} />
+            <NotesCell session={session} canEdit={canEditReviews} />
           </tr>
         ))}
       </tbody>
@@ -670,7 +731,7 @@ function EmployeeCell({ session }: { session: EnrichedClockSession }) {
 }
 
 function FlagsCell({ session }: { session: EnrichedClockSession }) {
-  const labels = session.flags.length > 0 ? session.flags : session.notes ? [session.notes] : [];
+  const labels = session.flags;
 
   return (
     <td className="px-4 py-4 text-zinc-600">
@@ -683,6 +744,62 @@ function FlagsCell({ session }: { session: EnrichedClockSession }) {
       ) : (
         "None"
       )}
+    </td>
+  );
+}
+
+function NotesCell({
+  session,
+  canEdit,
+}: {
+  session: EnrichedClockSession;
+  canEdit: boolean;
+}) {
+  return (
+    <td className="px-4 py-4 text-sm text-zinc-600">
+      {session.adminReviewNotes ? (
+        <p className="max-w-72 whitespace-pre-wrap">{session.adminReviewNotes}</p>
+      ) : session.notes ? (
+        <p className="max-w-72 whitespace-pre-wrap">{session.notes}</p>
+      ) : (
+        <span className="text-zinc-400">None</span>
+      )}
+      {session.adminReviewedAt ? (
+        <p className="mt-1 text-xs font-semibold text-zinc-500">
+          Reviewed {formatDateTime(session.adminReviewedAt)}
+        </p>
+      ) : null}
+      {canEdit ? (
+        <AttendanceNotesEditor
+          clockSessionId={session.id}
+          notes={session.adminReviewNotes}
+        />
+      ) : null}
+    </td>
+  );
+}
+
+function AttendanceCell({
+  session,
+  canEdit,
+}: {
+  session: EnrichedClockSession;
+  canEdit: boolean;
+}) {
+  return (
+    <td className="px-4 py-4">
+      <AttendanceBadge status={session.attendanceStatus} />
+      {session.adminReviewStatus ? (
+        <p className="mt-1 text-[11px] font-bold uppercase text-[#001f4d]/60">
+          Admin reviewed
+        </p>
+      ) : null}
+      {canEdit ? (
+        <AttendanceStatusEditor
+          clockSessionId={session.id}
+          reviewStatus={session.adminReviewStatus}
+        />
+      ) : null}
     </td>
   );
 }
@@ -1035,6 +1152,7 @@ function enrichSession(
   scheduleAssignments: ScheduleAssignmentRow[],
   scheduleMap: Map<string, WorkScheduleRow>,
   dayOffRosters: DayOffRosterRow[],
+  reviewMap: Map<string, AttendanceReviewRow>,
 ): EnrichedClockSession {
   const employee = employeeMap.get(session.employeeid);
   const departmentName = employee?.department_id
@@ -1055,7 +1173,7 @@ function enrichSession(
   const schedule = findScheduleForSession(session, scheduleAssignments, scheduleMap);
   const dayOffLabel = getDayOffLabel(session, dayOffRosters);
   const scheduleFlags = getScheduleFlags(session, schedule);
-  const attendanceStatus = getAttendanceStatus(
+  const computedAttendanceStatus = getAttendanceStatus(
     session,
     leaveMatches,
     dayOffLabel,
@@ -1066,10 +1184,12 @@ function enrichSession(
     session,
     leaveMatches,
     dayOffLabel,
-    attendanceStatus,
+    computedAttendanceStatus,
     schedule,
     scheduleFlags,
   );
+  const review = reviewMap.get(session.id);
+  const attendanceStatus = review?.reviewstatus ?? computedAttendanceStatus;
 
   return {
     ...session,
@@ -1080,6 +1200,9 @@ function enrichSession(
     dayOffLabel,
     schedule,
     attendanceStatus,
+    adminReviewStatus: review?.reviewstatus ?? null,
+    adminReviewNotes: review?.notes ?? null,
+    adminReviewedAt: review?.reviewedat ?? null,
     flags,
   };
 }
@@ -1446,6 +1569,7 @@ function buildCsvHref(sessions: EnrichedClockSession[], mode: RecordsMode) {
           "Net Worked Minutes",
           "Clock Status",
           "Flags",
+          "Notes",
         ]
       : [
           "Employee",
@@ -1460,6 +1584,7 @@ function buildCsvHref(sessions: EnrichedClockSession[], mode: RecordsMode) {
           "Leave/PTO",
           "Attendance Status",
           "Flags",
+          "Notes",
         ];
   const rows = sessions.map((session) =>
     mode === "clock"
@@ -1475,6 +1600,7 @@ function buildCsvHref(sessions: EnrichedClockSession[], mode: RecordsMode) {
           String(getCreditedClockMinutes(session, session.schedule)),
           formatLabel(session.status),
           session.flags.join("; "),
+          session.adminReviewNotes ?? session.notes ?? "",
         ]
       : [
           session.employeeName,
@@ -1489,6 +1615,7 @@ function buildCsvHref(sessions: EnrichedClockSession[], mode: RecordsMode) {
           getLeaveCsvValue(session),
           formatAttendanceStatus(session.attendanceStatus),
           session.flags.join("; "),
+          session.adminReviewNotes ?? session.notes ?? "",
         ],
   );
   const csv = [headers, ...rows]

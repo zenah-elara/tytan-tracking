@@ -16,6 +16,7 @@ export default async function AdminAttendanceRecordsPage({
     <ClockRecordsPage
       mode="attendance"
       searchParams={params}
+      canEditReviews
       subtitle="Daily attendance review by date: complete, in progress, leave, day off, or needs review."
     />
   );

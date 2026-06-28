@@ -4,6 +4,19 @@ export type ClockSessionStatus =
   | "completed"
   | "voided";
 
+export type AttendanceReviewStatus = "complete" | "needs_review";
+
+export type AttendanceRecordReview = {
+  id: string;
+  clockSessionId: string;
+  reviewStatus: AttendanceReviewStatus;
+  notes: string | null;
+  reviewedBy: string;
+  reviewedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ClockSession = {
   id: string;
   employeeId: string;
