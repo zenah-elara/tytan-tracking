@@ -7,6 +7,7 @@ import { CompanyAnnouncementCard } from "@/components/dashboard/company-announce
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
+import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 import type { ClockSessionStatus } from "@/types/clock";
 
@@ -218,7 +219,7 @@ export default async function EmployeePage() {
       request.start_date <= today &&
       request.end_date >= today,
   );
-  const dayOffLabel = getDayOffLabel(today, dayOffRoster);
+  const dayOffLabel = getDayOffLabel(employee.id, today, dayOffRoster);
   const schedule = findCurrentSchedule(scheduleAssignments, schedules);
   const scheduleLabel = schedule
     ? `${schedule.name} · ${formatTime(schedule.shift_start)}-${formatTime(
@@ -519,15 +520,12 @@ function findCurrentSchedule(
   return schedules.find((schedule) => schedule.id === assignment.schedule_id) ?? null;
 }
 
-function getDayOffLabel(date: string, roster: DayOffRosterRow | null) {
-  if (!roster) return "None";
-
-  const weekday = new Date(`${date}T00:00:00+08:00`).toLocaleDateString("en-US", {
-    timeZone: "Asia/Manila",
-    weekday: "long",
-  });
-
-  return roster.dayoff === weekday ? roster.dayoff : "None";
+function getDayOffLabel(
+  employeeId: string,
+  date: string,
+  roster: DayOffRosterRow | null,
+) {
+  return getMonthlyRosterDayOffLabel(employeeId, date, roster ? [roster] : []);
 }
 
 function getManilaDateString(date: Date) {

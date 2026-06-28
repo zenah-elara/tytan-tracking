@@ -7,6 +7,7 @@ import {
 } from "@/components/dashboard/availability-section";
 import { CompanyAnnouncementCard } from "@/components/dashboard/company-announcement-card";
 import { getRealEmployeeIds, isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
+import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 
 type EmployeeRow = {
@@ -859,19 +860,7 @@ function getDayOffLabel(
   date: string,
   dayOffRosters: DayOffRosterRow[],
 ) {
-  const rosterMonth = `${date.slice(0, 8)}01`;
-  const roster = dayOffRosters.find(
-    (row) => row.employeeid === employeeId && row.month === rosterMonth,
-  );
-
-  if (!roster) return "None";
-
-  const weekday = new Date(`${date}T00:00:00+08:00`).toLocaleDateString("en-US", {
-    timeZone: "Asia/Manila",
-    weekday: "long",
-  });
-
-  return roster.dayoff === weekday ? roster.dayoff : "None";
+  return getMonthlyRosterDayOffLabel(employeeId, date, dayOffRosters);
 }
 
 function findScheduleForSession(

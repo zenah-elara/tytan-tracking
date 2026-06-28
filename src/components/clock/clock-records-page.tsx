@@ -1,5 +1,6 @@
 import type { ClockSessionStatus } from "@/types/clock";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
+import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 
 export type ClockRecordsSearchParams = {
@@ -1126,24 +1127,11 @@ function getDayOffLabel(
   session: ClockSessionRow,
   dayOffRosters: DayOffRosterRow[],
 ) {
-  const rosterMonth = `${session.workdate.slice(0, 8)}01`;
-  const roster = dayOffRosters.find(
-    (candidate) =>
-      candidate.employeeid === session.employeeid &&
-      candidate.month === rosterMonth,
+  return getMonthlyRosterDayOffLabel(
+    session.employeeid,
+    session.workdate,
+    dayOffRosters,
   );
-
-  if (!roster) return "None";
-
-  const workday = new Date(`${session.workdate}T00:00:00+08:00`).toLocaleDateString(
-    "en-US",
-    {
-      timeZone: "Asia/Manila",
-      weekday: "long",
-    },
-  );
-
-  return roster.dayoff === workday ? roster.dayoff : "None";
 }
 
 function findScheduleForSession(
@@ -1404,24 +1392,7 @@ function getEmployeeDayOffLabel(
   date: string,
   dayOffRosters: DayOffRosterRow[],
 ) {
-  const rosterMonth = `${date.slice(0, 8)}01`;
-  const roster = dayOffRosters.find(
-    (candidate) =>
-      candidate.employeeid === employeeId &&
-      candidate.month === rosterMonth,
-  );
-
-  if (!roster) return "None";
-
-  const workday = new Date(`${date}T00:00:00+08:00`).toLocaleDateString(
-    "en-US",
-    {
-      timeZone: "Asia/Manila",
-      weekday: "long",
-    },
-  );
-
-  return roster.dayoff === workday ? roster.dayoff : "None";
+  return getMonthlyRosterDayOffLabel(employeeId, date, dayOffRosters);
 }
 
 function getLeaveCsvValue(session: EnrichedClockSession) {

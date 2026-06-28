@@ -1,3 +1,5 @@
+import { getManilaWeekday, isEmployeeRestDay } from "@/lib/schedule/monthly-day-off";
+
 type AvailabilityEmployee = {
   id: string;
   full_name: string;
@@ -71,15 +73,9 @@ export function buildAvailabilitySummary({
   );
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
   const weekday = getManilaWeekday(today);
-  const rosterMonth = `${today.slice(0, 8)}01`;
   const restDayItems = employees
     .filter((employee) =>
-      dayOffRosters.some(
-        (roster) =>
-          roster.employeeid === employee.id &&
-          roster.month === rosterMonth &&
-          roster.dayoff === weekday,
-      ),
+      isEmployeeRestDay(employee.id, today, dayOffRosters),
     )
     .map((employee) =>
       buildAvailabilityItem({
@@ -287,11 +283,4 @@ function buildAvailabilityItem({
     detail,
     dateRange,
   };
-}
-
-function getManilaWeekday(date: string) {
-  return new Date(`${date}T00:00:00+08:00`).toLocaleDateString("en-US", {
-    timeZone: "Asia/Manila",
-    weekday: "long",
-  });
 }
