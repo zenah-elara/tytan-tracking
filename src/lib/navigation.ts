@@ -31,14 +31,12 @@ export const navigationGroups: NavigationGroup[] = [
       { label: "Team Clock Records", href: "/manager/clock-records" },
       { label: "Attendance Logs", href: "/manager/attendance-logs" },
       { label: "Leave Log", href: "/manager/leave-log" },
-      { label: "Notifications", href: "/manager/notifications" },
     ],
   },
   {
     title: "Admin",
     links: [
       { label: "Dashboard", href: "/admin", exact: true },
-      { label: "Notifications", href: "/admin/notifications" },
     ],
   },
   {

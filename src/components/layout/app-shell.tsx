@@ -5,6 +5,7 @@ import { getDefaultRouteForRole } from "@/lib/auth/permissions";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getNavigationGroupsForRole } from "@/lib/navigation";
 import { AppFrame } from "@/components/layout/app-frame";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 import type { AuthUserProfile } from "@/types/auth";
 
 type AppShellProps = {
@@ -49,6 +50,7 @@ export async function AppShell({ children, profile: initialProfile }: AppShellPr
           <div className="flex flex-wrap items-center gap-2 text-sm">
             {profile ? (
               <>
+                <NotificationBell role={profile.role} />
                 <div className="rounded-lg border border-[#efe6b6] bg-[#fffdf2] px-3 py-2 shadow-sm">
                   <p className="font-bold text-[#001f4d]">
                     {profile.fullName}
