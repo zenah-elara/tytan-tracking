@@ -69,11 +69,13 @@ System administrator.
 | `/employee/schedule` | Allowed | Allowed | Allowed | User can view own schedule. |
 | `/account-security` | Allowed | Allowed | Allowed | Authenticated users can update their own password with Supabase Auth. |
 | `/manager` | Denied | Allowed | Allowed | Team overview for managers/admins. |
+| `/manager/notifications` | Denied | Allowed | Allowed | Managers see scoped operational notifications for their team; admins can access manager views. |
 | `/manager/team-attendance` | Denied | Allowed | Allowed | Managers see direct reports; admins see all or filtered teams. |
 | `/manager/leave-approvals` | Denied | Allowed | Allowed | Managers approve direct reports; admins approve all. |
 | `/manager/time-adjustments` | Denied | Allowed | Allowed | Managers approve direct reports; admins approve all. |
 | `/manager/reports` | Denied | Allowed | Allowed | Managers see team reports; admins can use broader admin reports too. |
 | `/admin` | Denied | Denied | Allowed | Admin-only home. |
+| `/admin/notifications` | Denied | Denied | Allowed | Admin-only operational notification center. |
 | `/admin/employees` | Denied | Denied | Allowed | Admin-only employee management. |
 | `/admin/login-provisioning` | Denied | Denied | Allowed | Admin-only auth/profile linking for real active employees. Requires server-only service role key. |
 | `/admin/departments` | Denied | Denied | Allowed | Admin-only department management. |
@@ -106,6 +108,7 @@ System administrator.
 | Viewing team reports | No | Yes | Yes | Direct reports or assigned departments for managers. |
 | Viewing organization reports | No | No | Yes | Admin-wide reporting. |
 | Exporting reports | No | Yes | Yes | Managers export team scope; admins export organization scope. |
+| Viewing operational notifications | No | Yes | Yes | Managers see manager-scoped notifications; admins see all operational notifications. |
 | Changing own password | Yes | Yes | Yes | Uses the signed-in Supabase Auth session, not a service role. |
 | Login provisioning | No | No | Yes | Admin-only. Uses server-only service role when configured; excludes test employees and does not create employee rows. |
 | Viewing audit logs | No | No | Yes | Later admin feature. |
@@ -185,6 +188,20 @@ Planned clock data access:
 - Manual adjustments, reports, attendance summaries, Google Chat integration,
   GPS, device tracking, screenshots, and biometrics are out of scope for this
   phase.
+
+## Notifications Center V1 RLS Draft
+
+The local draft `supabase/migrations/20260628090000_notifications_center.sql`
+adds `notifications` and `notification_delivery_attempts`.
+
+- Admins can read all notifications.
+- Managers can read notifications addressed to their employee row or manager
+  role.
+- Server actions create notification rows after successful clock and leave
+  events.
+- Notifications use idempotency keys where useful to avoid duplicate alerts.
+- External Google Chat delivery is future-ready only and depends on a future
+  runtime webhook variable. No webhook is stored in the repo or docs.
 
 ## Data Scope Rules
 

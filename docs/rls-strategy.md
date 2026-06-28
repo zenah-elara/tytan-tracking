@@ -160,8 +160,10 @@ The Phase 5 SQL draft includes conservative starter policies for:
 - `work_schedule_days`
 - `employee_schedule_assignments`
 
-The draft intentionally does not add policies for leave, attendance, reports, or
-notifications because those tables do not exist yet.
+The Phase 5 draft intentionally did not add policies for leave, attendance,
+reports, or notifications because those tables did not exist yet at that point.
+Later local drafts add scoped policies for leave, clock, monthly day-off rosters,
+and Notifications Center V1.
 
 ## Items That Should Wait
 

@@ -8,6 +8,7 @@ import {
   isRealTytanEmployee,
 } from "@/lib/employees/filters";
 import { canSupervisorApproveLeaveForEmployee } from "@/lib/leave/approval-scope";
+import { notifyAdminsAndEmployeeManager } from "@/lib/notifications/actions";
 import { createClient } from "@/lib/supabase/server";
 import type { LeavePolicyType, LeaveRequestStatus } from "@/types/leave";
 
@@ -545,19 +546,38 @@ export async function submitLeaveRequestAction(formData: FormData) {
     redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "invalid-leave-type");
   }
 
-  const { error } = await supabase.from("leave_requests").insert({
-    employee_id: employee.id,
-    leave_type_id: leaveTypeId,
-    start_date: startDate,
-    end_date: endDate,
-    total_hours: requestedHours,
-    reason,
-    status: "pending_supervisor",
-  });
+  const { data: request, error } = await supabase
+    .from("leave_requests")
+    .insert({
+      employee_id: employee.id,
+      leave_type_id: leaveTypeId,
+      start_date: startDate,
+      end_date: endDate,
+      total_hours: requestedHours,
+      reason,
+      status: "pending_supervisor",
+    })
+    .select("id")
+    .maybeSingle();
 
   if (error) {
     redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
   }
+
+  await notifyLeaveEvent(employee.id, {
+    type: "leave_request_submitted",
+    severity: "info",
+    title: "Leave request submitted",
+    message: `${employee.full_name} submitted ${leaveType.name} for ${requestedHours} hour(s).`,
+    requestId: (request as { id?: string } | null)?.id,
+    metadata: {
+      leave_type: leaveType.name,
+      start_date: startDate,
+      end_date: endDate,
+      requested_hours: requestedHours,
+    },
+    idempotencyKey: `leave:submitted:${employee.id}:${leaveTypeId}:${startDate}:${endDate}:${requestedHours}`,
+  });
 
   revalidatePath(EMPLOYEE_LEAVE_PATH);
   redirectWithStatus(EMPLOYEE_LEAVE_PATH, "success", "submitted");
@@ -627,21 +647,39 @@ export async function submitLeaveRequestFormAction(
   }
 
   if ((duplicateRows ?? []).length > 0) {
+    await notifyLeaveEvent(employee.id, {
+      type: "duplicate_leave_request_blocked",
+      severity: "warning",
+      title: "Duplicate leave request blocked",
+      message: `${employee.full_name} tried to resubmit the same leave request.`,
+      metadata: {
+        leave_type: leaveType.name,
+        start_date: startDate,
+        end_date: endDate,
+        requested_hours: requestedHours,
+      },
+      idempotencyKey: `leave:duplicate:${employee.id}:${leaveTypeId}:${startDate}:${endDate}:${requestedHours}`,
+    });
+
     return {
       status: "duplicate",
       message: "This leave request was already submitted.",
     };
   }
 
-  const { error } = await supabase.from("leave_requests").insert({
-    employee_id: employee.id,
-    leave_type_id: leaveTypeId,
-    start_date: startDate,
-    end_date: endDate,
-    total_hours: requestedHours,
-    reason,
-    status: "pending_supervisor",
-  });
+  const { data: request, error } = await supabase
+    .from("leave_requests")
+    .insert({
+      employee_id: employee.id,
+      leave_type_id: leaveTypeId,
+      start_date: startDate,
+      end_date: endDate,
+      total_hours: requestedHours,
+      reason,
+      status: "pending_supervisor",
+    })
+    .select("id")
+    .maybeSingle();
 
   if (error) {
     return {
@@ -649,6 +687,21 @@ export async function submitLeaveRequestFormAction(
       message: "That request could not be submitted. Please check the form and try again.",
     };
   }
+
+  await notifyLeaveEvent(employee.id, {
+    type: "leave_request_submitted",
+    severity: "info",
+    title: "Leave request submitted",
+    message: `${employee.full_name} submitted ${leaveType.name} for ${requestedHours} hour(s).`,
+    requestId: (request as { id?: string } | null)?.id,
+    metadata: {
+      leave_type: leaveType.name,
+      start_date: startDate,
+      end_date: endDate,
+      requested_hours: requestedHours,
+    },
+    idempotencyKey: `leave:submitted:${employee.id}:${leaveTypeId}:${startDate}:${endDate}:${requestedHours}`,
+  });
 
   revalidatePath(EMPLOYEE_LEAVE_PATH);
   revalidatePath(EMPLOYEE_NEW_LEAVE_PATH);
@@ -678,7 +731,7 @@ export async function reviewLeaveRequestAction(formData: FormData) {
   const supabase = await createClient();
   const { data: request, error: requestError } = await supabase
     .from("leave_requests")
-    .select("id,employee_id,status")
+    .select("id,employee_id,status,total_hours,leave_types(name)")
     .eq("id", requestId)
     .maybeSingle();
 
@@ -758,6 +811,15 @@ export async function reviewLeaveRequestAction(formData: FormData) {
     redirectWithStatus(returnPath, "error", "review-failed");
   }
 
+  await notifyLeaveReviewEvent({
+    employeeId: request.employee_id,
+    requestId,
+    decision,
+    reviewerName: reviewer.full_name,
+    leaveTypeName: getLeaveTypeNameFromRequest(request),
+    requestedHours: getLeaveRequestHours(request),
+  });
+
   revalidatePath(MANAGER_LEAVE_APPROVALS_PATH);
   revalidatePath(ADMIN_LEAVE_APPROVALS_PATH);
   revalidatePath(EMPLOYEE_LEAVE_PATH);
@@ -830,6 +892,115 @@ async function getCurrentEmployee() {
     ...(data as { id: string; full_name: string; work_email: string }),
     role: profile.role,
   };
+}
+
+async function notifyLeaveEvent(
+  employeeId: string,
+  input: {
+    type: string;
+    severity: "info" | "success" | "warning" | "critical";
+    title: string;
+    message: string;
+    requestId?: string;
+    metadata?: Record<string, unknown>;
+    idempotencyKey: string;
+  },
+) {
+  await notifyAdminsAndEmployeeManager(employeeId, {
+    category: "leave_workflow",
+    type: input.type,
+    severity: input.severity,
+    title: input.title,
+    message: input.message,
+    entityType: "leave_request",
+    entityId: input.requestId,
+    metadata: input.metadata,
+    idempotencyKey: input.idempotencyKey,
+  });
+}
+
+async function notifyLeaveReviewEvent({
+  employeeId,
+  requestId,
+  decision,
+  reviewerName,
+  leaveTypeName,
+  requestedHours,
+}: {
+  employeeId: string;
+  requestId: string;
+  decision: string;
+  reviewerName: string;
+  leaveTypeName: string;
+  requestedHours: number;
+}) {
+  const context = getLeaveReviewNotificationContext(decision);
+
+  if (!context) return;
+
+  await notifyLeaveEvent(employeeId, {
+    type: context.type,
+    severity: context.severity,
+    title: context.title,
+    message: `${reviewerName} ${context.message} ${leaveTypeName} (${requestedHours} hour(s)).`,
+    requestId,
+    metadata: {
+      decision,
+      leave_type: leaveTypeName,
+      requested_hours: requestedHours,
+      reviewer_name: reviewerName,
+    },
+    idempotencyKey: `leave:${context.type}:${requestId}`,
+  });
+}
+
+function getLeaveReviewNotificationContext(decision: string) {
+  const contexts = {
+    supervisor_approve: {
+      type: "leave_supervisor_approved",
+      severity: "success",
+      title: "Supervisor approved leave",
+      message: "supervisor-approved",
+    },
+    admin_approve: {
+      type: "leave_admin_approved",
+      severity: "success",
+      title: "Admin approved leave",
+      message: "final-approved",
+    },
+    reject: {
+      type: "leave_request_rejected",
+      severity: "warning",
+      title: "Leave request rejected",
+      message: "rejected",
+    },
+  } satisfies Record<
+    string,
+    {
+      type: string;
+      severity: "success" | "warning";
+      title: string;
+      message: string;
+    }
+  >;
+
+  return contexts[decision as keyof typeof contexts] ?? null;
+}
+
+function getLeaveTypeNameFromRequest(request: unknown) {
+  const leaveTypes = (request as { leave_types?: { name?: string } | { name?: string }[] })
+    .leave_types;
+
+  if (Array.isArray(leaveTypes)) {
+    return leaveTypes[0]?.name ?? "leave";
+  }
+
+  return leaveTypes?.name ?? "leave";
+}
+
+function getLeaveRequestHours(request: unknown) {
+  const value = (request as { total_hours?: number }).total_hours;
+  return typeof value === "number" ? value : 0;
 }
 
 function isFinalLeaveApprover(reviewer: {

@@ -61,7 +61,8 @@ without adding new migrations.
 | `time_entry_status` | `open`, `completed`, `voided` | Older planned attendance-entry model; Phase 13A starts with `clock_sessions`. |
 | `attendance_status` | `scheduled`, `present`, `late`, `absent`, `leave`, `day_off`, `holiday`, `incomplete` | Daily attendance classification. |
 | `time_adjustment_status` | `pending`, `approved`, `rejected`, `cancelled` | Manual correction workflow. |
-| `notification_event_status` | `pending`, `sent`, `failed`, `cancelled` | Later notification processing. |
+| `notification_severity` | `info`, `success`, `warning`, `critical` | Implemented as a text check in the Notifications Center V1 draft. |
+| `notification_delivery_status` | `skipped`, `sent`, `failed` | Future external delivery audit status for Google Chat attempts. |
 | `audit_action` | `create`, `update`, `delete`, `approve`, `reject`, `cancel`, `export`, `login` | Suggested starting set for audit logs. |
 
 ## Core Identity / Access
@@ -970,49 +971,65 @@ Tracks employee or manager requests to correct missing or incorrect time entries
 
 ## Notifications / Audit
 
-### `notification_events`
+### `notifications`
 
 **Purpose**
 
-Stores notification work items for later delivery through Google Workspace or
-other channels.
+Stores in-app operational notifications for admin and scoped manager review.
 
 **Important Fields**
 
 | Field | Suggested Type | Notes |
 | --- | --- | --- |
 | `id` | `uuid` | Primary key. |
-| `event_type` | `text` | Suggested values: `leave_submitted`, `leave_decided`, `missed_clock_in`, `upcoming_leave`. |
-| `recipient_profile_id` | `uuid` | Intended recipient. |
-| `related_table` | `text` | Source table name. |
-| `related_id` | `uuid` | Source record id. |
-| `payload` | `jsonb` | Non-secret structured message data. |
-| `status` | `notification_event_status` | Pending, sent, failed, or cancelled. |
-| `scheduled_for` | `timestamptz` | When notification should be sent. |
-| `sent_at` | `timestamptz` | Delivery timestamp. |
-| `error_message` | `text` | Safe error summary, no secrets. |
+| `recipient_role` | `app_role` | Admin-wide notifications use `admin`; manager-scoped notifications should prefer `recipient_employee_id`. |
+| `recipient_employee_id` | `uuid` | Employee recipient, mainly for direct manager scoped notifications. |
+| `category` | `text` | Clock activity, leave workflow, attendance guardrail, shift report, admin reminder, or system. |
+| `type` | `text` | Specific event type, such as `employee_clocked_in` or `leave_request_submitted`. |
+| `severity` | `text` | `info`, `success`, `warning`, or `critical`. |
+| `title` | `text` | Short display title. |
+| `message` | `text` | Human-readable notification body. |
+| `entity_type` | `text` | Optional source module/table name. |
+| `entity_id` | `uuid` | Optional source record id. |
+| `metadata` | `jsonb` | Safe non-secret context data. |
+| `idempotency_key` | `text` | Optional unique event key to prevent duplicates. |
+| `is_read` | `boolean` | Read state for the in-app center. |
+| `read_at` | `timestamptz` | Timestamp when marked read. |
 | `created_at` | `timestamptz` | Creation timestamp. |
-| `updated_at` | `timestamptz` | Update timestamp. |
 
 **Relationships**
 
-- Belongs to recipient `profiles`.
-- References source records by `related_table` and `related_id`.
+- May target a role or an employee.
+- May reference source records by `entity_type` and `entity_id`.
 
 **Status / Enums**
 
-- Uses `notification_event_status`.
+- Uses text check values for severity.
 
 **V1 Notes**
 
-- Record events before adding real Google Workspace delivery.
-- Keep payload free of credentials, tokens, and unnecessary sensitive content.
+- Admins can read all notifications.
+- Managers can read notifications specifically addressed to their employee row
+  or role.
+- Clock and leave server actions create initial in-app notifications.
+- Attendance guardrails and daily/shift reports are prepared as categories for
+  the next generation step.
+- Keep metadata free of credentials, tokens, and unnecessary sensitive content.
+- Google Chat delivery is future-ready only and must use runtime environment
+  configuration, not committed secrets.
 
 **Wait For Later**
 
 - Real Google Workspace API integration.
 - Delivery retry policy.
 - Notification preferences.
+
+### `notification_delivery_attempts`
+
+**Purpose**
+
+Stores future delivery audit rows for optional external channels such as Google
+Chat. V1 can operate entirely without any external delivery configuration.
 
 ### `audit_logs`
 
@@ -1071,7 +1088,8 @@ leave_requests 1--many leave_transactions
 employees 1--many time_entries
 employees 1--many attendance_days
 time_entries 0/1--many time_adjustment_requests
-profiles 1--many notification_events
+employees 1--many notifications
+notifications 1--many notification_delivery_attempts
 profiles 1--many audit_logs
 ```
 

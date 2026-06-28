@@ -53,6 +53,9 @@ Phase 14 refreshes the app-wide Tytan navy/yellow UI treatment, corrects the
 header branding to Tytan Teams / Tracking Tool, adds Account Security for
 authenticated password changes, and adds admin Login Provisioning for real
 active employee auth/profile linking.
+The current phase adds a local Notifications Center V1 draft for admin and
+manager operational alerts, plus a rollback-by-default manual SQL draft to move
+Richelle Manahan's schedule end time to 7:00 AM without touching live data.
 
 ## Tech Stack
 
@@ -174,6 +177,15 @@ active employee auth/profile linking.
   profiles
 - Login provisioning excludes test employees and Britt-as-employee; Britt remains
   profile-only/admin access
+- Notifications Center V1 draft added for admin and manager clock, leave,
+  attendance guardrail, shift report, and admin reminder events
+- Clock and leave server actions now emit in-app operational notifications after
+  successful events, using idempotency keys to reduce duplicate alerts
+- Google Chat delivery is future-ready only and requires a future runtime
+  webhook variable; no webhook or secret is committed
+- Manual SQL draft added at `docs/richelle-manahan-schedule-end-time-fix.sql`
+  to update Richelle Manahan's schedule assignment to a 7:00 AM end time after
+  SQL preview and explicit manual commit
 - Manager scope verification documents direct-report mapping for Johnnel, Aira,
   Richelle, Blando, and the Business Development/Britt profile-only limitation
 - Leave balances are tracked in hours; current 2026 baseline should come from

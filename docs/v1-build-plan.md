@@ -29,6 +29,13 @@ authenticated password changes, and adds admin-only Login Provisioning for
 real active employee auth/profile linking. Provisioning requires a server-only
 service role key and does not create duplicate employee records.
 
+Phase 15 adds a local Notifications Center V1 draft for admin and manager
+operational alerts. Clock and leave server actions can create in-app
+notifications with idempotency keys. Attendance guardrail and shift report
+notifications are planned on top of the existing graveyard-safe operational-day
+logic. Google Chat delivery remains future-ready only and is not configured in
+V1.
+
 ## Phase 1 - Scaffold/Foundation
 
 **Status:** Completed.
