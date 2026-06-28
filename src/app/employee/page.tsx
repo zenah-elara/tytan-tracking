@@ -7,7 +7,10 @@ import { CompanyAnnouncementCard } from "@/components/dashboard/company-announce
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
-import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
+import {
+  getMonthlyRosterDayOffLabel,
+  hasExplicitMonthlyDayOffRoster,
+} from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 import type { ClockSessionStatus } from "@/types/clock";
 
@@ -94,9 +97,8 @@ export default async function EmployeePage() {
   const profile = await getCurrentUserProfile();
   const supabase = await createClient();
   const employee = await getEmployeeForProfile(profile?.id, profile?.email);
-  const today = getManilaDateString(new Date());
-  const monthStart = `${today.slice(0, 8)}01`;
-  const currentYear = Number(today.slice(0, 4));
+  const calendarToday = getManilaDateString(new Date());
+  const currentYear = Number(calendarToday.slice(0, 4));
 
   if (!employee) {
     return (
@@ -144,14 +146,11 @@ export default async function EmployeePage() {
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
       .eq("employeeid", employee.id)
-      .eq("month", monthStart)
-      .maybeSingle(),
+      .limit(24),
     supabase
       .from("employee_schedule_assignments")
       .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
       .eq("employee_id", employee.id)
-      .lte("effective_from", today)
-      .or(`effective_to.is.null,effective_to.gte.${today}`)
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,name,shift_start,shift_end,timezone"),
     supabase
@@ -163,24 +162,23 @@ export default async function EmployeePage() {
       .from("leave_requests")
       .select("id,employee_id,leave_type_id,start_date,end_date,total_hours,status,deletedat")
       .eq("status", "approved")
-      .lte("start_date", today)
-      .gte("end_date", today)
       .is("deletedat", null)
-      .limit(100),
+      .limit(500),
     supabase
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
-      .eq("month", monthStart),
+      .limit(1000),
     getActiveCompanyAnnouncements(),
   ]);
   const sessions = (sessionData ?? []) as ClockSessionRow[];
   const balances = (balanceData ?? []) as LeaveBalanceRow[];
   const requests = (requestData ?? []) as LeaveRequestRow[];
   const leaveTypes = (typeData ?? []) as LeaveTypeRow[];
-  const dayOffRoster = dayOffData as DayOffRosterRow | null;
+  const dayOffRosters = (dayOffData ?? []) as DayOffRosterRow[];
   const scheduleAssignments =
     (scheduleAssignmentData ?? []) as ScheduleAssignmentRow[];
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
+  const today = getDefaultOperationalDate(schedules);
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
   const companyEmployees = ((companyEmployeeData ?? []) as CompanyEmployeeRow[])
     .filter(isRealTytanEmployee)
@@ -219,7 +217,12 @@ export default async function EmployeePage() {
       request.start_date <= today &&
       request.end_date >= today,
   );
-  const dayOffLabel = getDayOffLabel(employee.id, today, dayOffRoster);
+  const hasRosterForMonth = hasExplicitMonthlyDayOffRoster(
+    employee.id,
+    today,
+    dayOffRosters,
+  );
+  const dayOffLabel = getDayOffLabel(employee.id, today, dayOffRosters);
   const schedule = findCurrentSchedule(scheduleAssignments, schedules);
   const scheduleLabel = schedule
     ? `${schedule.name} · ${formatTime(schedule.shift_start)}-${formatTime(
@@ -233,6 +236,8 @@ export default async function EmployeePage() {
         }`
       : dayOffLabel !== "None"
         ? `Day Off: ${dayOffLabel}`
+        : !hasRosterForMonth
+          ? "No roster set"
         : scheduleLabel;
 
   return (
@@ -523,9 +528,28 @@ function findCurrentSchedule(
 function getDayOffLabel(
   employeeId: string,
   date: string,
-  roster: DayOffRosterRow | null,
+  dayOffRosters: DayOffRosterRow[],
 ) {
-  return getMonthlyRosterDayOffLabel(employeeId, date, roster ? [roster] : []);
+  return getMonthlyRosterDayOffLabel(employeeId, date, dayOffRosters);
+}
+
+function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date()) {
+  const today = getManilaDateString(now);
+  const previousDate = addDays(today, -1);
+  const nowTime = now.getTime();
+  const isWithinActiveOvernightShift = schedules.some((schedule) => {
+    if (normalizeTime(schedule.shift_end) > normalizeTime(schedule.shift_start)) {
+      return false;
+    }
+
+    const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
+    const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
+    const cutoff = scheduledEnd.getTime() + 30 * 60 * 1000;
+
+    return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
+  });
+
+  return isWithinActiveOvernightShift ? previousDate : today;
 }
 
 function getManilaDateString(date: Date) {
@@ -540,6 +564,20 @@ function getManilaDateString(date: Date) {
   const day = parts.find((part) => part.type === "day")?.value;
 
   return `${year}-${month}-${day}`;
+}
+
+function addDays(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00+08:00`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return getManilaDateString(value);
+}
+
+function getScheduledDateTime(date: string, time: string) {
+  return new Date(`${date}T${normalizeTime(time)}+08:00`);
+}
+
+function normalizeTime(time: string) {
+  return time.length === 5 ? `${time}:00` : time;
 }
 
 function formatDateTime(value: string) {
@@ -559,10 +597,6 @@ function formatTime(value: string) {
       minute: "2-digit",
     },
   );
-}
-
-function normalizeTime(time: string) {
-  return time.length === 5 ? `${time}:00` : time;
 }
 
 function formatMinutes(value: number) {

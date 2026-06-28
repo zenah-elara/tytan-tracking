@@ -8,7 +8,8 @@ const MANILA_TIME_ZONE = "Asia/Manila";
 
 // Day-offs are monthly roster data. Always use the month that contains the
 // operational shift date; never carry a weekday assignment across month
-// boundaries.
+// boundaries. A missing roster row for that exact month means no rest day is
+// assumed for that employee.
 export function getMonthlyRosterDayOff(
   employeeId: string,
   operationalDate: string,
@@ -17,7 +18,8 @@ export function getMonthlyRosterDayOff(
   const rosterMonth = getRosterMonthStart(operationalDate);
   const roster = dayOffRosters.find(
     (candidate) =>
-      candidate.employeeid === employeeId && candidate.month === rosterMonth,
+      candidate.employeeid === employeeId &&
+      normalizeRosterMonth(candidate.month) === rosterMonth,
   );
 
   if (!roster) return null;
@@ -43,8 +45,26 @@ export function isEmployeeRestDay(
   return Boolean(getMonthlyRosterDayOff(employeeId, operationalDate, dayOffRosters));
 }
 
+export function hasExplicitMonthlyDayOffRoster(
+  employeeId: string,
+  operationalDate: string,
+  dayOffRosters: MonthlyDayOffRoster[],
+) {
+  const rosterMonth = getRosterMonthStart(operationalDate);
+
+  return dayOffRosters.some(
+    (candidate) =>
+      candidate.employeeid === employeeId &&
+      normalizeRosterMonth(candidate.month) === rosterMonth,
+  );
+}
+
 export function getRosterMonthStart(operationalDate: string) {
   return `${operationalDate.slice(0, 8)}01`;
+}
+
+function normalizeRosterMonth(month: string) {
+  return month.slice(0, 10);
 }
 
 export function getManilaWeekday(operationalDate: string) {
