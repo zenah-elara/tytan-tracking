@@ -100,7 +100,7 @@ export default async function AdminMonthlyDayOffsPage({
         {employees.length === 0 ? (
           <EmptyState message="No active employees found." />
         ) : (
-          <form action={saveMonthlyDayOffRosterAction}>
+          <form key={monthValue} action={saveMonthlyDayOffRosterAction}>
             <input type="hidden" name="month" value={monthValue} />
             <div className="max-w-full overflow-x-auto">
               <table className="min-w-[860px] text-left text-sm">
@@ -128,6 +128,7 @@ export default async function AdminMonthlyDayOffsPage({
                         </td>
                         <td className="px-5 py-4">
                           <select
+                            key={`${monthValue}-${employee.id}-dayoff`}
                             name={`dayoff_${employee.id}`}
                             defaultValue={roster?.dayoff ?? ""}
                             className={fieldClassName}
@@ -142,6 +143,7 @@ export default async function AdminMonthlyDayOffsPage({
                         </td>
                         <td className="px-5 py-4">
                           <input
+                            key={`${monthValue}-${employee.id}-notes`}
                             name={`notes_${employee.id}`}
                             defaultValue={roster?.notes ?? ""}
                             placeholder="Optional"

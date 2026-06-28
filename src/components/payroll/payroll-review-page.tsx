@@ -1,4 +1,9 @@
 import type { ClockSessionStatus } from "@/types/clock";
+import {
+  getCreditedClockMinutes,
+  getRenderedGrossMinutes,
+  isCurrentOpenClockSession,
+} from "@/lib/clock/duration";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
 import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
@@ -608,9 +613,9 @@ function buildRecordForDate({
     clockIn: session?.clockinat ?? null,
     clockOut: session?.clockoutat ?? null,
     clockStatus: session?.status ?? null,
-    grossMinutes: Number(session?.grossminutes ?? 0),
+    grossMinutes: session ? getRenderedGrossMinutes(session, schedule) : 0,
     breakMinutes: Number(session?.breakminutes ?? 0),
-    netMinutes: Number(session?.networkminutes ?? 0),
+    netMinutes: session ? getCreditedClockMinutes(session, schedule) : 0,
     leaveLabel,
     dayOffLabel,
     flags,
@@ -628,7 +633,7 @@ function getAttendanceStatus(
   if (dayOffLabel !== "None") return "day_off";
   if (!session) return "needs_review";
   if (
-    isOngoingSession(session) &&
+    isOngoingSession(session, schedule) &&
     !scheduleFlags.includes("Schedule Missing") &&
     !isPastClockOutCutoff(session, schedule)
   ) {
@@ -638,7 +643,7 @@ function getAttendanceStatus(
   if (
     session.status === "completed" &&
     session.clockoutat &&
-    session.networkminutes >= REQUIRED_SHIFT_MINUTES
+    getCreditedClockMinutes(session, schedule) >= REQUIRED_SHIFT_MINUTES
   ) {
     return "complete";
   }
@@ -658,16 +663,21 @@ function getFlags(
   if (leaveLabel !== "None") flags.push("On PTO/Leave");
   if (dayOffLabel !== "None") flags.push("Day Off");
   if (!session) return flags;
-  if (session.status === "active") flags.push("Active shift");
-  if (session.status === "on_break") flags.push("Currently on break");
+  if (isOngoingSession(session, schedule) && session.status === "active") {
+    flags.push("Active shift");
+  }
+  if (isOngoingSession(session, schedule) && session.status === "on_break") {
+    flags.push("Currently on break");
+  }
   if (session.status === "voided") flags.push("Voided record");
   if (!session.clockoutat && isPastClockOutCutoff(session, schedule)) {
     flags.push("Missing clock out");
   }
   if (
     attendanceStatus === "needs_review" &&
-    !isOngoingSession(session) &&
-    session.networkminutes < REQUIRED_SHIFT_MINUTES
+    (!isOngoingSession(session, schedule) ||
+      isPastClockOutCutoff(session, schedule)) &&
+    getCreditedClockMinutes(session, schedule) < REQUIRED_SHIFT_MINUTES
   ) {
     flags.push("Under 8 hours");
   }
@@ -816,8 +826,11 @@ function getScheduleFlags(session: ClockSessionRow, schedule: WorkScheduleRow | 
   return flags;
 }
 
-function isOngoingSession(session: ClockSessionRow) {
-  return session.status === "active" || session.status === "on_break";
+function isOngoingSession(
+  session: ClockSessionRow,
+  schedule: WorkScheduleRow | null = null,
+) {
+  return isCurrentOpenClockSession(session, schedule);
 }
 
 function isPastClockOutCutoff(

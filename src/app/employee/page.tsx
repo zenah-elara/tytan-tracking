@@ -4,6 +4,12 @@ import {
   buildAvailabilitySummary,
 } from "@/components/dashboard/availability-section";
 import { CompanyAnnouncementCard } from "@/components/dashboard/company-announcement-card";
+import {
+  getCreditedClockMinutes,
+  getRenderedGrossMinutes,
+  isStaleOpenClockSession,
+  STALE_OPEN_SESSION_GRACE_MINUTES,
+} from "@/lib/clock/duration";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
@@ -200,10 +206,13 @@ export default async function EmployeePage() {
     leaveTypes,
     today,
   });
+  const schedule = findCurrentSchedule(scheduleAssignments, schedules);
   const openSession =
     sessions.find(
       (session) =>
-        !session.clockoutat && ["active", "on_break"].includes(session.status),
+        !session.clockoutat &&
+        ["active", "on_break"].includes(session.status) &&
+        !isStaleOpenClockSession(session, schedule),
     ) ?? null;
   const todaysSessions = sessions.filter((session) => session.workdate === today);
   const currentSession =
@@ -223,7 +232,6 @@ export default async function EmployeePage() {
     dayOffRosters,
   );
   const dayOffLabel = getDayOffLabel(employee.id, today, dayOffRosters);
-  const schedule = findCurrentSchedule(scheduleAssignments, schedules);
   const scheduleLabel = schedule
     ? `${schedule.name} · ${formatTime(schedule.shift_start)}-${formatTime(
         schedule.shift_end,
@@ -261,7 +269,11 @@ export default async function EmployeePage() {
         />
         <SummaryCard
           label="Net worked"
-          value={currentSession ? formatMinutes(currentSession.networkminutes) : "0h 0m"}
+          value={
+            currentSession
+              ? formatMinutes(getCreditedClockMinutes(currentSession, schedule))
+              : "0h 0m"
+          }
         />
       </section>
 
@@ -292,7 +304,11 @@ export default async function EmployeePage() {
             />
             <MetricCard
               label="Shift"
-              value={currentSession ? formatMinutes(currentSession.grossminutes) : "0h 0m"}
+              value={
+                currentSession
+                  ? formatMinutes(getRenderedGrossMinutes(currentSession, schedule))
+                  : "0h 0m"
+              }
             />
           </div>
           <div className="border-t border-[#efe6b6] p-5">
@@ -369,7 +385,7 @@ export default async function EmployeePage() {
                 </div>
                 <div className="text-right text-xs text-zinc-600">
                   <p className="font-bold text-[#001f4d]">
-                    {formatMinutes(session.networkminutes)}
+                    {formatMinutes(getCreditedClockMinutes(session, findCurrentSchedule(scheduleAssignments, schedules)))}
                   </p>
                   <p className="mt-1">{formatLabel(session.status)}</p>
                 </div>
@@ -544,7 +560,8 @@ function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date(
 
     const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
     const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
-    const cutoff = scheduledEnd.getTime() + 30 * 60 * 1000;
+    const cutoff =
+      scheduledEnd.getTime() + STALE_OPEN_SESSION_GRACE_MINUTES * 60 * 1000;
 
     return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
   });

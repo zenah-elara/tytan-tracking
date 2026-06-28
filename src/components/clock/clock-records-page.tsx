@@ -1,4 +1,10 @@
 import type { ClockSessionStatus } from "@/types/clock";
+import {
+  getCreditedClockMinutes,
+  getRenderedGrossMinutes,
+  isCurrentOpenClockSession,
+  STALE_OPEN_SESSION_GRACE_MINUTES,
+} from "@/lib/clock/duration";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
 import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
@@ -615,9 +621,7 @@ function EmployeeLogTable({ sessions }: { sessions: EnrichedClockSession[] }) {
             <td className="px-4 py-4 text-zinc-600">
               {formatClockOut(session)}
             </td>
-            <td className="px-4 py-4 text-zinc-600">
-              {formatMinutes(session.grossminutes)}
-            </td>
+            <td className="px-4 py-4 text-zinc-600">{formatGrossMinutes(session)}</td>
             <td className="px-4 py-4 text-zinc-600">
               {formatMinutes(session.breakminutes)}
             </td>
@@ -645,7 +649,7 @@ function TimeCells({ session }: { session: EnrichedClockSession }) {
       <td className="px-4 py-4 text-zinc-600">
         {formatClockOutDateTime(session)}
       </td>
-      <td className="px-4 py-4 text-zinc-600">{formatMinutes(session.grossminutes)}</td>
+      <td className="px-4 py-4 text-zinc-600">{formatGrossMinutes(session)}</td>
       <td className="px-4 py-4 text-zinc-600">{formatMinutes(session.breakminutes)}</td>
       <td className="px-4 py-4 font-semibold text-[#001f4d]">
         {formatWorkedMinutes(session)}
@@ -883,8 +887,22 @@ function QuickLookSummary({
   const clockItems = [
     ["Today's Clock Records", sessions.length],
     ["Completed Today", sessions.filter((session) => session.status === "completed").length],
-    ["Active Now", sessions.filter((session) => session.status === "active").length],
-    ["On break", sessions.filter((session) => session.status === "on_break").length],
+    [
+      "Active Now",
+      sessions.filter(
+        (session) =>
+          session.status === "active" &&
+          isOngoingSession(session, session.schedule),
+      ).length,
+    ],
+    [
+      "On break",
+      sessions.filter(
+        (session) =>
+          session.status === "on_break" &&
+          isOngoingSession(session, session.schedule),
+      ).length,
+    ],
     ["Missing out", sessions.filter((session) => session.flags.includes("Missing clock out")).length],
     ["Not Clocked In", notClockedInCount ?? 0],
   ];
@@ -1076,7 +1094,7 @@ function getAttendanceStatus(
   if (leaveMatches.length > 0) return "on_leave";
   if (dayOffLabel !== "None") return "day_off";
   if (
-    isOngoingSession(session) &&
+    isOngoingSession(session, schedule) &&
     !scheduleFlags.includes("Schedule Missing") &&
     !isPastClockOutCutoff(session, schedule)
   ) {
@@ -1086,7 +1104,7 @@ function getAttendanceStatus(
   if (
     session.status === "completed" &&
     session.clockoutat &&
-    session.networkminutes >= REQUIRED_SHIFT_MINUTES
+    getCreditedClockMinutes(session, schedule) >= REQUIRED_SHIFT_MINUTES
   ) {
     return "complete";
   }
@@ -1106,16 +1124,21 @@ function getFlags(
 
   if (leaveMatches.length > 0) flags.push("On PTO/Leave");
   if (dayOffLabel !== "None") flags.push("Day Off");
-  if (session.status === "active") flags.push("Active shift");
-  if (session.status === "on_break") flags.push("Currently on break");
+  if (isOngoingSession(session, schedule) && session.status === "active") {
+    flags.push("Active shift");
+  }
+  if (isOngoingSession(session, schedule) && session.status === "on_break") {
+    flags.push("Currently on break");
+  }
   if (session.status === "voided") flags.push("Voided record");
   if (!session.clockoutat && isPastClockOutCutoff(session, schedule)) {
     flags.push("Missing clock out");
   }
   if (
     attendanceStatus === "needs_review" &&
-    !isOngoingSession(session) &&
-    session.networkminutes < REQUIRED_SHIFT_MINUTES
+    (!isOngoingSession(session, schedule) ||
+      isPastClockOutCutoff(session, schedule)) &&
+    getCreditedClockMinutes(session, schedule) < REQUIRED_SHIFT_MINUTES
   ) {
     flags.push("Under 8 hours");
   }
@@ -1204,8 +1227,11 @@ function getScheduleFlags(
   return flags;
 }
 
-function isOngoingSession(session: ClockSessionRow) {
-  return session.status === "active" || session.status === "on_break";
+function isOngoingSession(
+  session: ClockSessionRow,
+  schedule: ScheduleContext | null = null,
+) {
+  return isCurrentOpenClockSession(session, schedule);
 }
 
 function isPastClockOutCutoff(
@@ -1256,13 +1282,13 @@ function getGroupSummary(sessions: EnrichedClockSession[]) {
     onLeave: sessions.filter((session) => session.attendanceStatus === "on_leave").length,
     dayOff: sessions.filter((session) => session.attendanceStatus === "day_off").length,
     activeOrBreak: sessions.filter(
-      (session) => session.status === "active" || session.status === "on_break",
+      (session) => isOngoingSession(session, session.schedule),
     ).length,
     needsReview: sessions.filter(
       (session) => session.attendanceStatus === "needs_review",
     ).length,
     netMinutes: sessions.reduce(
-      (total, session) => total + session.networkminutes,
+      (total, session) => total + getCreditedClockMinutes(session, session.schedule),
       0,
     ),
   };
@@ -1320,7 +1346,11 @@ function matchesOperationalRange(
     return true;
   }
 
-  if (isOngoingSession(session) && !session.clockoutat && session.schedule) {
+  if (
+    isOngoingSession(session, session.schedule) &&
+    !session.clockoutat &&
+    session.schedule
+  ) {
     const scheduledEndDate = getShiftEndDate(
       session.workdate,
       session.schedule.shiftStart,
@@ -1440,9 +1470,9 @@ function buildCsvHref(sessions: EnrichedClockSession[], mode: RecordsMode) {
           session.workdate,
           formatDateTime(session.clockinat),
           session.clockoutat ? formatDateTime(session.clockoutat) : "",
-          String(session.grossminutes),
+          String(getRenderedGrossMinutes(session, session.schedule)),
           String(session.breakminutes),
-          String(session.networkminutes),
+          String(getCreditedClockMinutes(session, session.schedule)),
           formatLabel(session.status),
           session.flags.join("; "),
         ]
@@ -1453,9 +1483,9 @@ function buildCsvHref(sessions: EnrichedClockSession[], mode: RecordsMode) {
           session.workdate,
           formatDateTime(session.clockinat),
           session.clockoutat ? formatDateTime(session.clockoutat) : "",
-          String(session.grossminutes),
+          String(getRenderedGrossMinutes(session, session.schedule)),
           String(session.breakminutes),
-          String(session.networkminutes),
+          String(getCreditedClockMinutes(session, session.schedule)),
           getLeaveCsvValue(session),
           formatAttendanceStatus(session.attendanceStatus),
           session.flags.join("; "),
@@ -1632,7 +1662,7 @@ function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date(
     const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
     const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
     const cutoff =
-      scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
+      scheduledEnd.getTime() + STALE_OPEN_SESSION_GRACE_MINUTES * 60 * 1000;
 
     return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
   });
@@ -1701,25 +1731,37 @@ function formatTime(value: string) {
 
 function formatClockOut(session: EnrichedClockSession) {
   if (session.clockoutat) return formatTime(session.clockoutat);
-  if (isOngoingSession(session) && !isPastClockOutCutoff(session, session.schedule)) {
+  if (
+    isOngoingSession(session, session.schedule) &&
+    !isPastClockOutCutoff(session, session.schedule)
+  ) {
     return "In progress";
   }
-  if (isOngoingSession(session)) return "Not yet clocked out";
+  if (!session.clockoutat) return "Not yet clocked out";
   return "Missing";
 }
 
 function formatClockOutDateTime(session: EnrichedClockSession) {
   if (session.clockoutat) return formatDateTime(session.clockoutat);
-  if (isOngoingSession(session) && !isPastClockOutCutoff(session, session.schedule)) {
+  if (
+    isOngoingSession(session, session.schedule) &&
+    !isPastClockOutCutoff(session, session.schedule)
+  ) {
     return "In progress";
   }
-  if (isOngoingSession(session)) return "Not yet clocked out";
+  if (!session.clockoutat) return "Not yet clocked out";
   return "Missing";
 }
 
 function formatWorkedMinutes(session: EnrichedClockSession) {
-  if (isOngoingSession(session) && !session.clockoutat) return "In progress";
-  return formatMinutes(session.networkminutes);
+  if (isOngoingSession(session, session.schedule) && !session.clockoutat) {
+    return "In progress";
+  }
+  return formatMinutes(getCreditedClockMinutes(session, session.schedule));
+}
+
+function formatGrossMinutes(session: EnrichedClockSession) {
+  return formatMinutes(getRenderedGrossMinutes(session, session.schedule));
 }
 
 function formatMinutes(value: number) {

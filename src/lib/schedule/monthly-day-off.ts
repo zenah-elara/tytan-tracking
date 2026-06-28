@@ -15,11 +15,10 @@ export function getMonthlyRosterDayOff(
   operationalDate: string,
   dayOffRosters: MonthlyDayOffRoster[],
 ) {
-  const rosterMonth = getRosterMonthStart(operationalDate);
-  const roster = dayOffRosters.find(
-    (candidate) =>
-      candidate.employeeid === employeeId &&
-      normalizeRosterMonth(candidate.month) === rosterMonth,
+  const roster = getExactMonthlyRoster(
+    employeeId,
+    operationalDate,
+    dayOffRosters,
   );
 
   if (!roster) return null;
@@ -27,6 +26,17 @@ export function getMonthlyRosterDayOff(
   const weekday = getManilaWeekday(operationalDate);
 
   return roster.dayoff === weekday ? roster.dayoff : null;
+}
+
+export function getMonthlyRosterAssignedDayOff(
+  employeeId: string,
+  operationalDate: string,
+  dayOffRosters: MonthlyDayOffRoster[],
+) {
+  return (
+    getExactMonthlyRoster(employeeId, operationalDate, dayOffRosters)?.dayoff ??
+    null
+  );
 }
 
 export function getMonthlyRosterDayOffLabel(
@@ -65,6 +75,20 @@ export function getRosterMonthStart(operationalDate: string) {
 
 function normalizeRosterMonth(month: string) {
   return month.slice(0, 10);
+}
+
+function getExactMonthlyRoster(
+  employeeId: string,
+  operationalDate: string,
+  dayOffRosters: MonthlyDayOffRoster[],
+) {
+  const rosterMonth = getRosterMonthStart(operationalDate);
+
+  return dayOffRosters.find(
+    (candidate) =>
+      candidate.employeeid === employeeId &&
+      normalizeRosterMonth(candidate.month) === rosterMonth,
+  );
 }
 
 export function getManilaWeekday(operationalDate: string) {

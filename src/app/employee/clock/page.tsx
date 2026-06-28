@@ -4,7 +4,14 @@ import {
   endBreakAction,
   startBreakAction,
 } from "@/lib/clock/actions";
+import {
+  getCreditedClockMinutes,
+  getRenderedGrossMinutes,
+  isStaleOpenClockSession,
+  STALE_OPEN_SESSION_GRACE_MINUTES,
+} from "@/lib/clock/duration";
 import { getCurrentUserProfile } from "@/lib/auth/session";
+import { getMonthlyRosterAssignedDayOff } from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 import type { ClockSessionStatus } from "@/types/clock";
 
@@ -30,6 +37,28 @@ type ClockSessionRow = {
   networkminutes: number;
 };
 
+type ScheduleAssignmentRow = {
+  id: string;
+  employee_id: string;
+  schedule_id: string;
+  effective_from: string;
+  effective_to: string | null;
+  is_primary: boolean;
+};
+
+type WorkScheduleRow = {
+  id: string;
+  name: string;
+  shift_start: string;
+  shift_end: string;
+};
+
+type DayOffRosterRow = {
+  employeeid: string;
+  month: string;
+  dayoff: string;
+};
+
 type ClockUiState = "not_clocked_in" | "active" | "on_break" | "completed" | "voided";
 type ClockButtonVariant = "start" | "primary" | "secondary" | "neutral";
 
@@ -38,7 +67,7 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
   const profile = await getCurrentUserProfile();
   const supabase = await createClient();
   const employee = await getEmployeeForProfile(profile?.id);
-  const today = getManilaDate();
+  const calendarToday = getManilaDate();
 
   if (!employee) {
     return (
@@ -51,6 +80,9 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
   const [
     { data: openSessionData, error: openSessionError },
     { data: todaySessionData, error: todaySessionError },
+    { data: scheduleAssignmentData },
+    { data: scheduleData },
+    { data: dayOffData },
   ] = await Promise.all([
     supabase
       .from("clock_sessions")
@@ -59,22 +91,66 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
       .is("clockoutat", null)
       .in("status", ["active", "on_break"])
       .order("clockinat", { ascending: false })
-      .limit(1),
+      .limit(8),
     supabase
       .from("clock_sessions")
       .select("id,employeeid,workdate,clockinat,clockoutat,status,grossminutes,breakminutes,networkminutes")
       .eq("employeeid", employee.id)
-      .eq("workdate", today)
+      .gte("workdate", addDays(calendarToday, -1))
+      .lte("workdate", calendarToday)
       .order("clockinat", { ascending: false }),
+    supabase
+      .from("employee_schedule_assignments")
+      .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
+      .eq("employee_id", employee.id)
+      .order("effective_from", { ascending: false }),
+    supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
+    supabase
+      .from("monthly_day_off_rosters")
+      .select("employeeid,month,dayoff")
+      .eq("employeeid", employee.id)
+      .limit(24),
   ]);
-  const openSession = ((openSessionData ?? []) as ClockSessionRow[])[0] ?? null;
-  const todaySessions = (todaySessionData ?? []) as ClockSessionRow[];
-  const currentSession = openSession ?? todaySessions[0] ?? null;
+  const scheduleAssignments =
+    (scheduleAssignmentData ?? []) as ScheduleAssignmentRow[];
+  const schedules = (scheduleData ?? []) as WorkScheduleRow[];
+  const dayOffRosters = (dayOffData ?? []) as DayOffRosterRow[];
+  const defaultSchedule = findScheduleForDate(
+    employee.id,
+    calendarToday,
+    scheduleAssignments,
+    schedules,
+  );
+  const operationalDate = getEmployeeOperationalDate(defaultSchedule);
+  const openSession =
+    ((openSessionData ?? []) as ClockSessionRow[]).find((session) => {
+      const schedule = findScheduleForSession(
+        session,
+        scheduleAssignments,
+        schedules,
+      );
+      return !isStaleOpenClockSession(session, schedule);
+    }) ?? null;
+  const operationalSessions = ((todaySessionData ?? []) as ClockSessionRow[]).filter(
+    (session) => session.workdate === operationalDate,
+  );
+  const currentSession = openSession ?? operationalSessions[0] ?? null;
+  const currentSchedule = currentSession
+    ? findScheduleForSession(currentSession, scheduleAssignments, schedules)
+    : findScheduleForDate(
+        employee.id,
+        operationalDate,
+        scheduleAssignments,
+        schedules,
+      );
   const clockState = getClockUiState(currentSession);
   const stateConfig = getClockStateConfig(clockState);
-  const displayedWorkDate = currentSession?.workdate ?? today;
+  const displayedWorkDate = currentSession?.workdate ?? operationalDate;
   const isOpenPreviousWorkDateSession =
-    Boolean(openSession) && openSession?.workdate !== today;
+    Boolean(openSession) && openSession?.workdate !== calendarToday;
+  const dayOff =
+    getMonthlyRosterAssignedDayOff(employee.id, operationalDate, dayOffRosters) ??
+    "No roster set";
   const statusError = openSessionError?.message ?? todaySessionError?.message;
 
   return (
@@ -110,6 +186,24 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
             <p className={`mt-1 text-sm ${stateConfig.metaClassName}`}>
               Work date: {displayedWorkDate}
             </p>
+            <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+              <ContextItem
+                label="Schedule"
+                value={
+                  currentSchedule
+                    ? `${formatTime(currentSchedule.shiftStart)} - ${formatTime(
+                        currentSchedule.shiftEnd,
+                      )}`
+                    : "Schedule unavailable"
+                }
+                className={stateConfig.contextClassName}
+              />
+              <ContextItem
+                label="Day off"
+                value={dayOff}
+                className={stateConfig.contextClassName}
+              />
+            </div>
             {isOpenPreviousWorkDateSession ? (
               <p className="mt-2 rounded-lg border border-[#efe6b6] bg-[#fffdf2] px-3 py-2 text-sm font-semibold text-[#001f4d]">
                 Active graveyard shift crossing midnight.
@@ -143,12 +237,14 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
               />
               <MetricCard
                 label="Total shift"
-                value={formatMinutes(currentSession.grossminutes)}
+                value={formatMinutes(
+                  getRenderedGrossMinutes(currentSession, currentSchedule),
+                )}
               />
               <MetricCard
                 label="Break / Net worked"
                 value={`${formatMinutes(currentSession.breakminutes)} / ${formatMinutes(
-                  currentSession.networkminutes,
+                  getCreditedClockMinutes(currentSession, currentSchedule),
                 )}`}
               />
             </div>
@@ -253,6 +349,48 @@ function getClockUiState(session: ClockSessionRow | null): ClockUiState {
   return "voided";
 }
 
+function findScheduleForSession(
+  session: ClockSessionRow,
+  assignments: ScheduleAssignmentRow[],
+  schedules: WorkScheduleRow[],
+) {
+  return findScheduleForDate(
+    session.employeeid,
+    session.workdate,
+    assignments,
+    schedules,
+  );
+}
+
+function findScheduleForDate(
+  employeeId: string,
+  workdate: string,
+  assignments: ScheduleAssignmentRow[],
+  schedules: WorkScheduleRow[],
+) {
+  const matchingAssignments = assignments.filter(
+    (assignment) =>
+      assignment.employee_id === employeeId &&
+      assignment.effective_from <= workdate &&
+      (!assignment.effective_to || assignment.effective_to >= workdate),
+  );
+  const assignment =
+    matchingAssignments.find((candidate) => candidate.is_primary) ??
+    matchingAssignments[0];
+
+  if (!assignment) return null;
+
+  const schedule = schedules.find((candidate) => candidate.id === assignment.schedule_id);
+
+  return schedule
+    ? {
+        name: schedule.name,
+        shiftStart: schedule.shift_start,
+        shiftEnd: schedule.shift_end,
+      }
+    : null;
+}
+
 function getClockStateConfig(state: ClockUiState) {
   const configs = {
     not_clocked_in: {
@@ -265,6 +403,7 @@ function getClockStateConfig(state: ClockUiState) {
       copyClassName: "text-zinc-700",
       metaClassName: "text-zinc-600",
       badgeClassName: "border-zinc-200 bg-zinc-100 text-zinc-700",
+      contextClassName: "border-[#efe6b6] bg-[#fffdf2] text-[#001f4d]",
     },
     active: {
       title: "Clocked in",
@@ -276,6 +415,7 @@ function getClockStateConfig(state: ClockUiState) {
       copyClassName: "text-white",
       metaClassName: "text-white/75",
       badgeClassName: "border-[#f2d300] bg-[#f2d300] text-[#001f4d]",
+      contextClassName: "border-white/20 bg-white/10 text-white",
     },
     on_break: {
       title: "On break",
@@ -287,6 +427,7 @@ function getClockStateConfig(state: ClockUiState) {
       copyClassName: "text-[#001f4d]",
       metaClassName: "text-[#001f4d]/70",
       badgeClassName: "border-[#001f4d] bg-white text-[#001f4d]",
+      contextClassName: "border-[#001f4d]/20 bg-white/60 text-[#001f4d]",
     },
     completed: {
       title: "Shift completed",
@@ -298,6 +439,7 @@ function getClockStateConfig(state: ClockUiState) {
       copyClassName: "text-emerald-900",
       metaClassName: "text-emerald-800/75",
       badgeClassName: "border-emerald-200 bg-white text-emerald-800",
+      contextClassName: "border-emerald-200 bg-white/70 text-emerald-900",
     },
     voided: {
       title: "Voided",
@@ -309,6 +451,7 @@ function getClockStateConfig(state: ClockUiState) {
       copyClassName: "text-zinc-700",
       metaClassName: "text-zinc-600",
       badgeClassName: "border-zinc-200 bg-white text-zinc-700",
+      contextClassName: "border-zinc-200 bg-white text-zinc-700",
     },
   } satisfies Record<
     ClockUiState,
@@ -322,6 +465,7 @@ function getClockStateConfig(state: ClockUiState) {
       copyClassName: string;
       metaClassName: string;
       badgeClassName: string;
+      contextClassName: string;
     }
   >;
 
@@ -362,6 +506,22 @@ function StatusBadge({ label, className }: { label: string; className: string })
   );
 }
 
+function ContextItem({
+  label,
+  value,
+  className,
+}: {
+  label: string;
+  value: string;
+  className: string;
+}) {
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${className}`}>
+      <span className="font-bold">{label}:</span> {value}
+    </div>
+  );
+}
+
 function TableHeader({ title }: { title: string }) {
   return (
     <div className="border-b border-[#efe6b6] px-5 py-4">
@@ -399,6 +559,51 @@ function getManilaDate() {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
+}
+
+function getEmployeeOperationalDate(
+  schedule: ReturnType<typeof findScheduleForDate>,
+  now = new Date(),
+) {
+  const today = getManilaDate();
+  if (!schedule || normalizeTime(schedule.shiftEnd) > normalizeTime(schedule.shiftStart)) {
+    return today;
+  }
+
+  const previousDate = addDays(today, -1);
+  const priorShiftEnd = new Date(
+    `${today}T${normalizeTime(schedule.shiftEnd)}+08:00`,
+  );
+  const staleCutoff =
+    priorShiftEnd.getTime() + STALE_OPEN_SESSION_GRACE_MINUTES * 60 * 1000;
+
+  return now.getTime() <= staleCutoff ? previousDate : today;
+}
+
+function addDays(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00+08:00`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
+function formatTime(value: string) {
+  return new Date(`2026-01-01T${normalizeTime(value)}+08:00`).toLocaleTimeString(
+    "en-PH",
+    {
+      timeZone: "Asia/Manila",
+      hour: "numeric",
+      minute: "2-digit",
+    },
+  );
+}
+
+function normalizeTime(time: string) {
+  return time.length === 5 ? `${time}:00` : time;
 }
 
 function formatDateTime(value: string) {

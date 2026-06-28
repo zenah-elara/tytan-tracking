@@ -1,5 +1,10 @@
 import Link from "next/link";
 import type { ClockSessionStatus } from "@/types/clock";
+import {
+  getCreditedClockMinutes,
+  isCurrentOpenClockSession,
+  STALE_OPEN_SESSION_GRACE_MINUTES,
+} from "@/lib/clock/duration";
 import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import {
   AvailabilitySection,
@@ -31,6 +36,8 @@ type ClockSessionRow = {
   clockinat: string;
   clockoutat: string | null;
   status: ClockSessionStatus;
+  grossminutes: number;
+  breakminutes: number;
   networkminutes: number;
 };
 
@@ -161,7 +168,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
     supabase.from("departments").select("id,name"),
     supabase
       .from("clock_sessions")
-      .select("id,employeeid,workdate,clockinat,clockoutat,status,networkminutes")
+      .select("id,employeeid,workdate,clockinat,clockoutat,status,grossminutes,breakminutes,networkminutes")
       .order("clockinat", { ascending: false })
       .limit(300),
     supabase
@@ -205,8 +212,15 @@ export default async function AdminPage({ searchParams }: PageProps) {
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
   const today = getDefaultOperationalDate(schedules);
   const operationalMonthStart = `${today.slice(0, 8)}01`;
+  const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
   const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
-    employeeIds.has(session.employeeid) && isOperationalSessionForDate(session, today),
+    employeeIds.has(session.employeeid) &&
+    isOperationalSessionForDate(
+      session,
+      today,
+      scheduleAssignments,
+      scheduleMap,
+    ),
   );
   const activeEmployees = employees.filter(isEligibleActiveTytanEmployee);
   const departmentMap = new Map(
@@ -214,7 +228,6 @@ export default async function AdminPage({ searchParams }: PageProps) {
   );
   const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
-  const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
   const currentMonthDayOffRosters = dayOffRosters.filter(
     (row) => row.month === operationalMonthStart,
   );
@@ -231,6 +244,8 @@ export default async function AdminPage({ searchParams }: PageProps) {
     leaveRequests: todaysApprovedLeave,
     leaveTypes,
     today,
+    scheduleAssignments,
+    schedules,
   });
   const allOperationItems = dedupeOperationItems(
     sessions.map((session) =>
@@ -282,10 +297,21 @@ export default async function AdminPage({ searchParams }: PageProps) {
     )
     .slice(0, 5);
   const clockedInToday = countUniqueEmployees(sessions.filter((session) =>
-    ["active", "on_break", "completed"].includes(session.status),
+    session.status === "completed" ||
+    isCurrentOpenClockSession(
+      session,
+      findScheduleForSession(session, scheduleAssignments, scheduleMap),
+    ),
   ));
   const onBreakToday = countUniqueEmployees(
-    sessions.filter((session) => session.status === "on_break"),
+    sessions.filter(
+      (session) =>
+        session.status === "on_break" &&
+        isCurrentOpenClockSession(
+          session,
+          findScheduleForSession(session, scheduleAssignments, scheduleMap),
+        ),
+    ),
   );
   const payrollNeedsReview = attendanceNeedsReviewToday > 0 || pendingDeductions.length > 0;
 
@@ -601,7 +627,12 @@ function countUniqueEmployees(sessions: ClockSessionRow[]) {
   return new Set(sessions.map((session) => session.employeeid)).size;
 }
 
-function isOperationalSessionForDate(session: ClockSessionRow, date: string) {
+function isOperationalSessionForDate(
+  session: ClockSessionRow,
+  date: string,
+  scheduleAssignments: ScheduleAssignmentRow[],
+  scheduleMap: Map<string, WorkScheduleRow>,
+) {
   if (session.workdate === date) return true;
   if (getManilaDateString(new Date(session.clockinat)) === date) return true;
   if (
@@ -613,7 +644,10 @@ function isOperationalSessionForDate(session: ClockSessionRow, date: string) {
 
   return (
     !session.clockoutat &&
-    isOngoingSession(session) &&
+    isOngoingSession(
+      session,
+      findScheduleForSession(session, scheduleAssignments, scheduleMap),
+    ) &&
     session.workdate === addDays(date, -1)
   );
 }
@@ -630,7 +664,7 @@ function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date(
     const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
     const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
     const cutoff =
-      scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
+      scheduledEnd.getTime() + STALE_OPEN_SESSION_GRACE_MINUTES * 60 * 1000;
 
     return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
   });
@@ -789,7 +823,7 @@ function getAttendanceStatus(
   if (leaveLabel !== "None") return "On PTO/Leave";
   if (dayOffLabel !== "None") return "Day Off";
   if (
-    isOngoingSession(session) &&
+    isOngoingSession(session, schedule) &&
     !scheduleFlags.includes("Schedule Missing") &&
     !isPastClockOutCutoff(session, schedule)
   ) {
@@ -799,7 +833,7 @@ function getAttendanceStatus(
   if (
     session.status === "completed" &&
     session.clockoutat &&
-    session.networkminutes >= REQUIRED_SHIFT_MINUTES
+    getCreditedClockMinutes(session, schedule) >= REQUIRED_SHIFT_MINUTES
   ) {
     return "Complete";
   }
@@ -818,15 +852,20 @@ function getFlags(
 
   if (leaveLabel !== "None") flags.push("On PTO/Leave");
   if (dayOffLabel !== "None") flags.push("Day Off");
-  if (session.status === "active") flags.push("Active shift");
-  if (session.status === "on_break") flags.push("On break");
+  if (isOngoingSession(session, schedule) && session.status === "active") {
+    flags.push("Active shift");
+  }
+  if (isOngoingSession(session, schedule) && session.status === "on_break") {
+    flags.push("On break");
+  }
   if (!session.clockoutat && isPastClockOutCutoff(session, schedule)) {
     flags.push("Missing Clock Out");
   }
   if (
     attendanceStatus === "Needs Review" &&
-    !isOngoingSession(session) &&
-    session.networkminutes < REQUIRED_SHIFT_MINUTES
+    (!isOngoingSession(session, schedule) ||
+      isPastClockOutCutoff(session, schedule)) &&
+    getCreditedClockMinutes(session, schedule) < REQUIRED_SHIFT_MINUTES
   ) {
     flags.push("Under 8 Hours");
   }
@@ -907,8 +946,11 @@ function getScheduleFlags(session: ClockSessionRow, schedule: WorkScheduleRow | 
   return flags;
 }
 
-function isOngoingSession(session: ClockSessionRow) {
-  return session.status === "active" || session.status === "on_break";
+function isOngoingSession(
+  session: ClockSessionRow,
+  schedule: WorkScheduleRow | null = null,
+) {
+  return isCurrentOpenClockSession(session, schedule);
 }
 
 function isPastClockOutCutoff(
