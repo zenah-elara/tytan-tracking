@@ -11,7 +11,10 @@ import {
   STALE_OPEN_SESSION_GRACE_MINUTES,
 } from "@/lib/clock/duration";
 import { getCurrentUserProfile } from "@/lib/auth/session";
-import { getMonthlyRosterAssignedDayOff } from "@/lib/schedule/monthly-day-off";
+import {
+  getMonthlyRosterDayOffLabel,
+  hasExplicitMonthlyDayOffRoster,
+} from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 import type { ClockSessionStatus } from "@/types/clock";
 
@@ -148,9 +151,17 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
   const displayedWorkDate = currentSession?.workdate ?? operationalDate;
   const isOpenPreviousWorkDateSession =
     Boolean(openSession) && openSession?.workdate !== calendarToday;
-  const dayOff =
-    getMonthlyRosterAssignedDayOff(employee.id, operationalDate, dayOffRosters) ??
-    "No roster set";
+  const hasRosterForOperationalWeek = hasExplicitMonthlyDayOffRoster(
+    employee.id,
+    operationalDate,
+    dayOffRosters,
+  );
+  const activeDayOff = getMonthlyRosterDayOffLabel(
+    employee.id,
+    operationalDate,
+    dayOffRosters,
+  );
+  const dayOff = hasRosterForOperationalWeek ? activeDayOff : "No roster set";
   const statusError = openSessionError?.message ?? todaySessionError?.message;
 
   return (

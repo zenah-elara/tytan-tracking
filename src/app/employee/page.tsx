@@ -233,9 +233,7 @@ export default async function EmployeePage() {
   );
   const dayOffLabel = getDayOffLabel(employee.id, today, dayOffRosters);
   const scheduleLabel = schedule
-    ? `${schedule.name} · ${formatTime(schedule.shift_start)}-${formatTime(
-        schedule.shift_end,
-      )}`
+    ? `${formatTime(schedule.shift_start)}-${formatTime(schedule.shift_end)}`
     : "Schedule unavailable";
   const todayContext =
     approvedLeaveToday
