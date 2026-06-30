@@ -3,6 +3,9 @@ import {
   type ClockRecordsSearchParams,
 } from "@/components/clock/clock-records-page";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 type PageProps = {
   searchParams: Promise<ClockRecordsSearchParams>;
 };

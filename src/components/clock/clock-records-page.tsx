@@ -1,5 +1,6 @@
 import { AttendanceNotesEditor } from "@/components/clock/attendance-review-editor";
 import { AttendanceStatusEditor } from "@/components/clock/attendance-status-editor";
+import { connection } from "next/server";
 import type {
   AttendanceReviewStatus,
   ClockSessionStatus,
@@ -164,6 +165,8 @@ export async function ClockRecordsPage({
   visibleEmployeeIds,
   canEditReviews = false,
 }: ClockRecordsPageProps) {
+  await connection();
+
   const supabase = await createClient();
   const querySearchParams = withDefaultRange(searchParams, mode);
   const isAdminClockMode = mode === "clock" && !visibleEmployeeIds;
@@ -237,6 +240,7 @@ export async function ClockRecordsPage({
   const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
     shouldIncludeSession(session, allEmployeeMap, employeeIds, scopeIds),
   );
+  const hasActualSessions = sessions.length > 0;
   const departments = (departmentData ?? []) as DepartmentRow[];
   const approvedLeaves = ((leaveData ?? []) as LeaveRequestRow[]).filter((request) =>
     employeeIds.has(request.employee_id),
@@ -257,6 +261,44 @@ export async function ClockRecordsPage({
       review,
     ]),
   );
+
+  if (!hasActualSessions) {
+    const emptyMessage =
+      mode === "clock"
+        ? "No clock records yet."
+        : mode === "attendance"
+          ? "No attendance records yet."
+          : "No attendance logs yet.";
+    const emptyTitle =
+      mode === "clock"
+        ? "Raw clock logs (0)"
+        : mode === "attendance"
+          ? "Daily attendance review"
+          : "Attendance history";
+
+    return (
+      <div className="grid max-w-full gap-5 overflow-hidden">
+        <PageHeader mode={mode} subtitle={subtitle} csvHref={buildCsvHref([], mode)} />
+
+        {error ? (
+          <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            Records could not be loaded.
+          </p>
+        ) : null}
+
+        <Filters
+          departments={departments}
+          mode={mode}
+          searchParams={normalizedSearchParams}
+        />
+
+        <RecordsCard title={emptyTitle}>
+          <EmptyState message={emptyMessage} />
+        </RecordsCard>
+      </div>
+    );
+  }
+
   const employeeMap = new Map(visibleEmployees.map((employee) => [employee.id, employee]));
   const departmentMap = new Map(
     departments.map((department) => [department.id, department.name]),
@@ -341,7 +383,13 @@ export async function ClockRecordsPage({
       {mode === "clock" ? (
         <RecordsCard title={`Raw clock logs (${filteredSessions.length})`}>
           {filteredSessions.length === 0 ? (
-            <EmptyState message="No raw clock logs match the selected filters." />
+            <EmptyState
+              message={
+                hasActualSessions
+                  ? "No clock records match the selected filters."
+                  : "No clock records yet."
+              }
+            />
           ) : (
             <div className="max-w-full overflow-x-auto">
               <ClockTable sessions={filteredSessions} />
@@ -354,6 +402,7 @@ export async function ClockRecordsPage({
         <DailyAttendanceReview
           sessions={filteredSessions}
           canEditReviews={canEditReviews}
+          hasActualSessions={hasActualSessions}
         />
       ) : null}
 
@@ -361,6 +410,7 @@ export async function ClockRecordsPage({
         <EmployeeAttendanceLogs
           sessions={filteredSessions}
           canEditReviews={canEditReviews}
+          hasActualSessions={hasActualSessions}
         />
       ) : null}
     </div>
@@ -407,16 +457,24 @@ function PageHeader({
 function DailyAttendanceReview({
   sessions,
   canEditReviews,
+  hasActualSessions,
 }: {
   sessions: EnrichedClockSession[];
   canEditReviews: boolean;
+  hasActualSessions: boolean;
 }) {
   const groups = groupByDate(sessions);
 
   if (groups.length === 0) {
     return (
       <RecordsCard title="Daily attendance review">
-        <EmptyState message="No daily attendance records match the selected filters." />
+        <EmptyState
+          message={
+            hasActualSessions
+              ? "No attendance records match the selected filters."
+              : "No attendance records yet."
+          }
+        />
       </RecordsCard>
     );
   }
@@ -455,16 +513,24 @@ function DailyAttendanceReview({
 function EmployeeAttendanceLogs({
   sessions,
   canEditReviews,
+  hasActualSessions,
 }: {
   sessions: EnrichedClockSession[];
   canEditReviews: boolean;
+  hasActualSessions: boolean;
 }) {
   const groups = groupByEmployee(sessions);
 
   if (groups.length === 0) {
     return (
       <RecordsCard title="Attendance history">
-        <EmptyState message="No employee attendance history matches the selected filters." />
+        <EmptyState
+          message={
+            hasActualSessions
+              ? "No attendance logs match the selected filters."
+              : "No attendance logs yet."
+          }
+        />
       </RecordsCard>
     );
   }

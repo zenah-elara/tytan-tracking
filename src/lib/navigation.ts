@@ -71,6 +71,7 @@ export const navigationGroups: NavigationGroup[] = [
   {
     title: "Reports",
     links: [
+      { label: "Payroll Report", href: "/admin/payroll-report" },
       { label: "Payroll Review", href: "/admin/payroll-review" },
     ],
   },

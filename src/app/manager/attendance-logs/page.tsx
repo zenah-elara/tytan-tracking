@@ -4,6 +4,9 @@ import {
 } from "@/components/clock/clock-records-page";
 import { getManagerScope } from "@/lib/auth/manager-scope";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 type PageProps = {
   searchParams: Promise<ClockRecordsSearchParams>;
 };
