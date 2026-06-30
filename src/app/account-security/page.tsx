@@ -10,11 +10,12 @@ type AccountSecurityPageProps = {
 };
 
 const successMessages: Record<string, string> = {
-  "password-updated": "Password updated. Use the new password next time you sign in.",
+  "password-updated": "Password updated successfully.",
 };
 
 const errorMessages: Record<string, string> = {
-  "missing-password": "Enter and confirm your new password.",
+  "missing-password": "Enter your current password and confirm your new password.",
+  "current-password-invalid": "Your current password is incorrect.",
   "password-too-short": "Use at least 8 characters.",
   "password-mismatch": "The password confirmation does not match.",
   "update-failed": "Password could not be updated. Try again or contact an admin.",
@@ -49,6 +50,16 @@ export default async function AccountSecurityPage({
             <h2 className="font-black">Change password</h2>
           </div>
           <form action={updatePasswordAction} className="grid gap-4 p-5">
+            <label className="grid gap-2 text-sm font-bold text-[#001f4d]">
+              Current password
+              <input
+                name="current_password"
+                type="password"
+                autoComplete="current-password"
+                required
+                className={fieldClassName}
+              />
+            </label>
             <label className="grid gap-2 text-sm font-bold text-[#001f4d]">
               New password
               <input
@@ -91,6 +102,7 @@ const fieldClassName =
   "h-11 w-full min-w-0 rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 text-sm text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30";
 
 function StatusMessage({ success, error }: { success?: string; error?: string }) {
+  const isError = !success && Boolean(error);
   const message = success
     ? successMessages[success] ?? "Saved."
     : error
@@ -102,7 +114,7 @@ function StatusMessage({ success, error }: { success?: string; error?: string })
   return (
     <p
       className={`rounded-lg border px-4 py-3 text-sm ${
-        error
+        isError
           ? "border-red-200 bg-red-50 text-red-700"
           : "border-emerald-200 bg-emerald-50 text-emerald-800"
       }`}

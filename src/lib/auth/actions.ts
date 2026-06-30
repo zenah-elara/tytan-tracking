@@ -72,10 +72,11 @@ export async function logoutAction() {
 }
 
 export async function updatePasswordAction(formData: FormData) {
+  const currentPassword = String(formData.get("current_password") ?? "");
   const password = String(formData.get("password") ?? "");
   const confirmPassword = String(formData.get("confirm_password") ?? "");
 
-  if (!password || !confirmPassword) {
+  if (!currentPassword || !password || !confirmPassword) {
     redirectWithAccountStatus("error", "missing-password");
   }
 
@@ -92,14 +93,31 @@ export async function updatePasswordAction(formData: FormData) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user) {
+  if (!user?.email) {
     redirect(LOGIN_PATH);
   }
 
-  const { error } = await supabase.auth.updateUser({ password });
+  const { error: reauthenticationError } = await supabase.auth.signInWithPassword({
+    email: user.email,
+    password: currentPassword,
+  });
 
-  if (error) {
-    redirectWithAccountStatus("error", "update-failed");
+  if (reauthenticationError) {
+    redirectWithAccountStatus("error", "current-password-invalid");
+  }
+
+  const { data: updatedUserData, error: updateError } =
+    await supabase.auth.updateUser({ password });
+
+  if (updateError || !updatedUserData.user) {
+    const { error: verificationError } = await supabase.auth.signInWithPassword({
+      email: user.email,
+      password,
+    });
+
+    if (verificationError) {
+      redirectWithAccountStatus("error", "update-failed");
+    }
   }
 
   redirectWithAccountStatus("success", "password-updated");
