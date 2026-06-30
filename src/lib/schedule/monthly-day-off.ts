@@ -5,11 +5,21 @@ export type MonthlyDayOffRoster = {
 };
 
 const MANILA_TIME_ZONE = "Asia/Manila";
+const OPERATIONAL_WEEK_START_INDEX = 1; // Monday
 
-// Day-offs are monthly roster data. Always use the month that contains the
-// operational shift date; never carry a weekday assignment across month
-// boundaries. A missing roster row for that exact month means no rest day is
-// assumed for that employee.
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sunday: 0,
+  Monday: 1,
+  Tuesday: 2,
+  Wednesday: 3,
+  Thursday: 4,
+  Friday: 5,
+  Saturday: 6,
+};
+
+// Day-offs are monthly roster data, but the roster month changes only at the
+// operational week boundary. If a week spans June and July, June's roster
+// applies to the entire week; July starts on the first Monday-led week in July.
 export function getMonthlyRosterDayOff(
   employeeId: string,
   operationalDate: string,
@@ -70,7 +80,22 @@ export function hasExplicitMonthlyDayOffRoster(
 }
 
 export function getRosterMonthStart(operationalDate: string) {
-  return `${operationalDate.slice(0, 8)}01`;
+  return getRosterMonthForOperationalWeek(operationalDate);
+}
+
+export function getRosterMonthForOperationalWeek(operationalDate: string) {
+  const weekStart = getOperationalWeekStart(operationalDate);
+
+  return `${weekStart.slice(0, 8)}01`;
+}
+
+export function getOperationalWeekStart(operationalDate: string) {
+  const weekday = getManilaWeekday(operationalDate);
+  const weekdayIndex = WEEKDAY_INDEX[weekday] ?? OPERATIONAL_WEEK_START_INDEX;
+  const daysSinceWeekStart =
+    (weekdayIndex - OPERATIONAL_WEEK_START_INDEX + 7) % 7;
+
+  return addDays(operationalDate, -daysSinceWeekStart);
 }
 
 function normalizeRosterMonth(month: string) {
@@ -99,4 +124,20 @@ export function getManilaWeekday(operationalDate: string) {
       weekday: "long",
     },
   );
+}
+
+function addDays(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00+08:00`);
+  value.setUTCDate(value.getUTCDate() + days);
+
+  return getManilaDateString(value);
+}
+
+function getManilaDateString(date: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: MANILA_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }

@@ -10,7 +10,10 @@ import {
   isCurrentOpenClockSession,
 } from "@/lib/clock/duration";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
-import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
+import {
+  getMonthlyRosterDayOffLabel,
+  getRosterMonthStart,
+} from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 
 export type PayrollReviewSearchParams = {
@@ -206,8 +209,8 @@ export async function PayrollReviewPage({
     supabase
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
-      .gte("month", `${normalizedSearchParams.from.slice(0, 8)}01`)
-      .lte("month", `${normalizedSearchParams.to.slice(0, 8)}01`)
+      .gte("month", getRosterMonthStart(normalizedSearchParams.from))
+      .lte("month", getRosterMonthStart(normalizedSearchParams.to))
       .limit(1000),
     supabase
       .from("employee_schedule_assignments")

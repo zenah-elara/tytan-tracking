@@ -12,7 +12,10 @@ import {
 } from "@/components/dashboard/availability-section";
 import { CompanyAnnouncementCard } from "@/components/dashboard/company-announcement-card";
 import { getRealEmployeeIds, isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
-import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
+import {
+  getMonthlyRosterDayOffLabel,
+  getRosterMonthStart,
+} from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 
 type EmployeeRow = {
@@ -211,7 +214,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
     );
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
   const today = getDefaultOperationalDate(schedules);
-  const operationalMonthStart = `${today.slice(0, 8)}01`;
+  const operationalMonthStart = getRosterMonthStart(today);
   const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
   const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
     employeeIds.has(session.employeeid) &&
@@ -229,7 +232,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
   const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
   const currentMonthDayOffRosters = dayOffRosters.filter(
-    (row) => row.month === operationalMonthStart,
+    (row) => row.month.slice(0, 10) === operationalMonthStart,
   );
   const todaysApprovedLeave = leaveRequests.filter(
     (request) =>
