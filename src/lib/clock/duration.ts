@@ -29,8 +29,9 @@ export function getCreditedClockMinutes(
   const grossMinutes = getRenderedGrossMinutes(session, schedule, now);
   const breakMinutes = Math.max(0, Number(session.breakminutes ?? 0));
   const netMinutes = Math.max(0, grossMinutes - breakMinutes);
+  const creditedCapMinutes = getCreditedShiftCapMinutes(schedule);
 
-  return Math.min(netMinutes, MAX_CREDITED_SHIFT_MINUTES);
+  return Math.min(netMinutes, creditedCapMinutes);
 }
 
 export function getRenderedGrossMinutes(
@@ -45,10 +46,7 @@ export function getRenderedGrossMinutes(
     return Math.max(0, Number(session.grossminutes ?? 0));
   }
 
-  return Math.min(
-    Math.max(0, Math.floor((effectiveEnd - clockIn) / 60000)),
-    MAX_CREDITED_SHIFT_MINUTES,
-  );
+  return Math.max(0, Math.floor((effectiveEnd - clockIn) / 60000));
 }
 
 export function isOpenClockSession(session: ClockDurationSession) {
@@ -92,21 +90,15 @@ export function getEffectiveClockEnd(
   schedule: ClockDurationSchedule,
   now = new Date(),
 ) {
-  const fallbackEnd = session.clockoutat ? new Date(session.clockoutat) : now;
-  const scheduledEnd = schedule
-    ? getScheduledShiftEnd(
-        session.workdate,
-        readShiftStart(schedule),
-        readShiftEnd(schedule),
-      )
-    : null;
-  const endCandidates = [fallbackEnd.getTime()];
-
-  if (scheduledEnd) {
-    endCandidates.push(scheduledEnd.getTime());
+  if (session.clockoutat) {
+    return new Date(session.clockoutat).getTime();
   }
 
-  return Math.min(...endCandidates);
+  const openEnd = schedule
+    ? getOpenSessionDurationCutoff(session, schedule)
+    : now.getTime();
+
+  return Math.min(now.getTime(), openEnd);
 }
 
 export function getScheduledShiftEnd(
@@ -122,6 +114,22 @@ export function getScheduledShiftEnd(
 
 export function getScheduledDateTime(date: string, time: string) {
   return new Date(`${date}T${normalizeTime(time)}+08:00`);
+}
+
+export function getExpectedScheduledShiftMinutes(schedule: ClockDurationSchedule) {
+  if (!schedule) return MAX_CREDITED_SHIFT_MINUTES;
+
+  const scheduledStart = getScheduledDateTime("2026-01-01", readShiftStart(schedule));
+  const scheduledEnd = getScheduledShiftEnd(
+    "2026-01-01",
+    readShiftStart(schedule),
+    readShiftEnd(schedule),
+  );
+  const expectedMinutes = Math.floor(
+    (scheduledEnd.getTime() - scheduledStart.getTime()) / 60000,
+  );
+
+  return expectedMinutes > 0 ? expectedMinutes : MAX_CREDITED_SHIFT_MINUTES;
 }
 
 export function getShiftEndDate(
@@ -164,4 +172,24 @@ function readShiftStart(schedule: NonNullable<ClockDurationSchedule>) {
 
 function readShiftEnd(schedule: NonNullable<ClockDurationSchedule>) {
   return schedule.shiftEnd ?? schedule.shift_end ?? "00:00:00";
+}
+
+function getCreditedShiftCapMinutes(schedule: ClockDurationSchedule) {
+  return Math.min(
+    getExpectedScheduledShiftMinutes(schedule),
+    MAX_CREDITED_SHIFT_MINUTES,
+  );
+}
+
+function getOpenSessionDurationCutoff(
+  session: ClockDurationSession,
+  schedule: NonNullable<ClockDurationSchedule>,
+) {
+  const scheduledEnd = getScheduledShiftEnd(
+    session.workdate,
+    readShiftStart(schedule),
+    readShiftEnd(schedule),
+  );
+
+  return scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
 }
