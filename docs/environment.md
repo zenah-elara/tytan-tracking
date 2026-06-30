@@ -13,6 +13,16 @@ NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 ```
 
+Optional server-only Google Chat delivery uses:
+
+```text
+GOOGLE_CHAT_WEBHOOK_URL=
+```
+
+When omitted, internal notifications continue normally and Google Chat delivery
+is skipped. The webhook URL must only be configured in a protected server
+environment and must never use a `NEXT_PUBLIC_` prefix.
+
 ## Safety Rules
 
 - These values must be added manually later.

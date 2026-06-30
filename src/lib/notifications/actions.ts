@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentUserProfile } from "@/lib/auth/session";
+import { sendGoogleChatNotification } from "@/lib/notifications/google-chat";
 import { createClient } from "@/lib/supabase/server";
 import type {
   NotificationCategory,
@@ -34,6 +35,7 @@ type CreateNotificationInput = {
   entityId?: string;
   metadata?: Record<string, unknown>;
   idempotencyKey?: string;
+  deliverToGoogleChat?: boolean;
 };
 
 export async function createOperationalNotification(input: CreateNotificationInput) {
@@ -76,7 +78,9 @@ export async function createOperationalNotification(input: CreateNotificationInp
     return;
   }
 
-  await deliverExternalNotification(mapNotificationRow(data as NotificationRow));
+  if (input.deliverToGoogleChat !== false) {
+    await deliverExternalNotification(mapNotificationRow(data as NotificationRow));
+  }
   revalidatePath(ADMIN_NOTIFICATIONS_PATH);
   revalidatePath(MANAGER_NOTIFICATIONS_PATH);
 }
@@ -100,6 +104,7 @@ export async function notifyAdminsAndEmployeeManager(
     idempotencyKey: input.idempotencyKey
       ? `admin:${input.idempotencyKey}`
       : undefined,
+    deliverToGoogleChat: true,
   });
 
   if (employee?.manager_id) {
@@ -110,6 +115,7 @@ export async function notifyAdminsAndEmployeeManager(
       idempotencyKey: input.idempotencyKey
         ? `manager:${employee.manager_id}:${input.idempotencyKey}`
         : undefined,
+      deliverToGoogleChat: false,
     });
   }
 }
@@ -216,34 +222,20 @@ async function getEmployeeNotificationContext(employeeId: string) {
 }
 
 async function deliverExternalNotification(notification: OperationalNotification) {
-  const webhookUrl = process.env.GOOGLE_CHAT_NOTIFICATIONS_WEBHOOK_URL;
-
-  if (!webhookUrl) return;
-
-  const supabase = await createClient();
-
   try {
-    const response = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        text: `${notification.title}\n${notification.message}`,
-      }),
-    });
+    const result = await sendGoogleChatNotification(notification);
 
+    if (result.status === "skipped") return;
+
+    const supabase = await createClient();
     await supabase.from("notification_delivery_attempts").insert({
       notification_id: notification.id,
       channel: "google_chat",
-      status: response.ok ? "sent" : "failed",
-      response_summary: `${response.status} ${response.statusText}`,
+      status: result.status,
+      response_summary: result.responseSummary,
     });
-  } catch (error) {
-    await supabase.from("notification_delivery_attempts").insert({
-      notification_id: notification.id,
-      channel: "google_chat",
-      status: "failed",
-      response_summary: error instanceof Error ? error.message : "Google Chat delivery failed",
-    });
+  } catch {
+    // External delivery is best-effort and must never fail the primary action.
   }
 }
 

@@ -8,8 +8,8 @@ review without changing the clock, leave, attendance, or payroll rules.
 - Admin notifications live at `/admin/notifications`.
 - Manager notifications live at `/manager/notifications`.
 - Employees do not have a notification center in V1.
-- Google Chat delivery is future-ready only. No webhook is hardcoded, and
-  `.env.local` is not modified.
+- Google Chat incoming-webhook delivery is optional. No webhook is hardcoded,
+  and `.env.local` is not modified.
 
 ## Categories
 
@@ -41,11 +41,14 @@ Server actions should provide an idempotency key whenever a notification could
 be retried. Example keys include employee, event type, request ID, operational
 date, or minute-level timestamp bucket depending on the event.
 
-## Google Chat Later
+## Google Chat Delivery
 
-The app includes a no-op delivery helper that only attempts Google Chat delivery
-when `GOOGLE_CHAT_NOTIFICATIONS_WEBHOOK_URL` exists in the runtime environment.
-The webhook should never be committed, printed, or stored in docs.
+The server-only delivery helper attempts one Google Chat message per operational
+event when `GOOGLE_CHAT_WEBHOOK_URL` exists in the runtime environment. Missing
+configuration silently skips delivery. Failed requests are best-effort, do not
+block clock or leave actions, and are recorded in
+`notification_delivery_attempts` when possible. The webhook must never be
+committed, printed, exposed to client components, or stored in docs.
 
 ## Pending Later Work
 
