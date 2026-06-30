@@ -12,6 +12,8 @@ import {
 } from "@/lib/clock/duration";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import {
+  getManilaWeekday,
+  getMonthlyRosterAssignedDayOff,
   getMonthlyRosterDayOffLabel,
   hasExplicitMonthlyDayOffRoster,
 } from "@/lib/schedule/monthly-day-off";
@@ -54,6 +56,7 @@ type WorkScheduleRow = {
   name: string;
   shift_start: string;
   shift_end: string;
+  timezone: string | null;
 };
 
 type DayOffRosterRow = {
@@ -107,7 +110,7 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
       .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
       .eq("employee_id", employee.id)
       .order("effective_from", { ascending: false }),
-    supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
+    supabase.from("work_schedules").select("id,name,shift_start,shift_end,timezone"),
     supabase
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
@@ -156,12 +159,33 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
     operationalDate,
     dayOffRosters,
   );
+  const assignedDayOff = getMonthlyRosterAssignedDayOff(
+    employee.id,
+    operationalDate,
+    dayOffRosters,
+  );
   const activeDayOff = getMonthlyRosterDayOffLabel(
     employee.id,
     operationalDate,
     dayOffRosters,
   );
-  const dayOff = hasRosterForOperationalWeek ? activeDayOff : "No roster set";
+  const scheduleDisplay = currentSchedule
+    ? `${formatWorkScheduleDisplay(currentSchedule)}${
+        activeDayOff !== "None" ? " | Day Off" : ""
+      }`
+    : "No schedule assigned";
+  const dayOff = getRosterStatusDisplay({
+    assignedDayOff,
+    activeDayOff,
+    hasRosterForOperationalWeek,
+  });
+  const dayOffDetail =
+    activeDayOff !== "None" && currentSchedule
+      ? `${getManilaWeekday(operationalDate)} · ${formatWorkScheduleTimeRange(
+          currentSchedule,
+          false,
+        )}`
+      : undefined;
   const statusError = openSessionError?.message ?? todaySessionError?.message;
 
   return (
@@ -200,18 +224,13 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
             <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
               <ContextItem
                 label="Schedule"
-                value={
-                  currentSchedule
-                    ? `${formatTime(currentSchedule.shiftStart)} - ${formatTime(
-                        currentSchedule.shiftEnd,
-                      )}`
-                    : "Schedule unavailable"
-                }
+                value={scheduleDisplay}
                 className={stateConfig.contextClassName}
               />
               <ContextItem
                 label="Day off"
                 value={dayOff}
+                detail={dayOffDetail}
                 className={stateConfig.contextClassName}
               />
             </div>
@@ -398,6 +417,7 @@ function findScheduleForDate(
         name: schedule.name,
         shiftStart: schedule.shift_start,
         shiftEnd: schedule.shift_end,
+        timezone: schedule.timezone,
       }
     : null;
 }
@@ -520,15 +540,18 @@ function StatusBadge({ label, className }: { label: string; className: string })
 function ContextItem({
   label,
   value,
+  detail,
   className,
 }: {
   label: string;
   value: string;
+  detail?: string;
   className: string;
 }) {
   return (
     <div className={`rounded-lg border px-3 py-2 ${className}`}>
       <span className="font-bold">{label}:</span> {value}
+      {detail ? <p className="mt-1 text-xs opacity-80">{detail}</p> : null}
     </div>
   );
 }
@@ -611,6 +634,40 @@ function formatTime(value: string) {
       minute: "2-digit",
     },
   );
+}
+
+function getRosterStatusDisplay({
+  assignedDayOff,
+  activeDayOff,
+  hasRosterForOperationalWeek,
+}: {
+  assignedDayOff: string | null;
+  activeDayOff: string;
+  hasRosterForOperationalWeek: boolean;
+}) {
+  if (!hasRosterForOperationalWeek) return "No roster set";
+  if (activeDayOff !== "None") return "Day Off";
+
+  return assignedDayOff ? `Day off: ${assignedDayOff}` : "No roster set";
+}
+
+function formatWorkScheduleDisplay(schedule: NonNullable<ReturnType<typeof findScheduleForDate>>) {
+  return `${formatWorkScheduleTimeRange(schedule, true)} ${formatScheduleTimezone(schedule.timezone)}`;
+}
+
+function formatWorkScheduleTimeRange(
+  schedule: NonNullable<ReturnType<typeof findScheduleForDate>>,
+  spaced: boolean,
+) {
+  const separator = spaced ? " - " : "-";
+
+  return `${formatTime(schedule.shiftStart)}${separator}${formatTime(schedule.shiftEnd)}`;
+}
+
+function formatScheduleTimezone(timezone: string | null | undefined) {
+  if (!timezone || timezone === "Asia/Manila") return "MLA";
+
+  return timezone;
 }
 
 function normalizeTime(time: string) {

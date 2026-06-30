@@ -14,6 +14,8 @@ import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
 import {
+  getManilaWeekday,
+  getMonthlyRosterAssignedDayOff,
   getMonthlyRosterDayOffLabel,
   hasExplicitMonthlyDayOffRoster,
 } from "@/lib/schedule/monthly-day-off";
@@ -231,20 +233,25 @@ export default async function EmployeePage() {
     today,
     dayOffRosters,
   );
+  const assignedDayOff = getMonthlyRosterAssignedDayOff(
+    employee.id,
+    today,
+    dayOffRosters,
+  );
   const dayOffLabel = getDayOffLabel(employee.id, today, dayOffRosters);
   const scheduleLabel = schedule
-    ? `${formatTime(schedule.shift_start)}-${formatTime(schedule.shift_end)}`
-    : "Schedule unavailable";
-  const todayContext =
-    approvedLeaveToday
-      ? `On PTO/Leave: ${
-          leaveTypeMap.get(approvedLeaveToday.leave_type_id) ?? "Approved Leave"
-        }`
-      : dayOffLabel !== "None"
-        ? `Day Off: ${dayOffLabel}`
-        : !hasRosterForMonth
-          ? "No roster set"
-        : scheduleLabel;
+    ? `${formatWorkScheduleDisplay(schedule)}${dayOffLabel !== "None" ? " | Day Off" : ""}`
+    : "No schedule assigned";
+  const todayContextDetail = getTodayContextDetail({
+    approvedLeaveLabel: approvedLeaveToday
+      ? leaveTypeMap.get(approvedLeaveToday.leave_type_id) ?? "Approved Leave"
+      : null,
+    assignedDayOff,
+    dayOffLabel,
+    hasRosterForMonth,
+    schedule,
+    today,
+  });
 
   return (
     <div className="grid max-w-full gap-5 overflow-hidden">
@@ -263,7 +270,8 @@ export default async function EmployeePage() {
         <SummaryCard label="Clock status" value={getCurrentStatus(currentSession)} />
         <SummaryCard
           label={currentWorkDate === today ? "Today" : "Active work date"}
-          value={currentWorkDate === today ? todayContext : currentWorkDate}
+          value={currentWorkDate === today ? scheduleLabel : currentWorkDate}
+          detail={currentWorkDate === today ? todayContextDetail : undefined}
         />
         <SummaryCard
           label="Net worked"
@@ -447,11 +455,20 @@ function DashboardSection({
   );
 }
 
-function SummaryCard({ label, value }: { label: string; value: string }) {
+function SummaryCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+}) {
   return (
     <article className="rounded-lg border border-[#efe6b6] bg-white p-4 shadow-sm">
       <p className="text-xs font-bold uppercase text-zinc-500">{label}</p>
       <p className="mt-2 text-lg font-black text-[#001f4d]">{value}</p>
+      {detail ? <p className="mt-1 text-xs font-semibold text-zinc-500">{detail}</p> : null}
     </article>
   );
 }
@@ -545,6 +562,48 @@ function getDayOffLabel(
   dayOffRosters: DayOffRosterRow[],
 ) {
   return getMonthlyRosterDayOffLabel(employeeId, date, dayOffRosters);
+}
+
+function getTodayContextDetail({
+  approvedLeaveLabel,
+  assignedDayOff,
+  dayOffLabel,
+  hasRosterForMonth,
+  schedule,
+  today,
+}: {
+  approvedLeaveLabel: string | null;
+  assignedDayOff: string | null;
+  dayOffLabel: string;
+  hasRosterForMonth: boolean;
+  schedule: WorkScheduleRow | null;
+  today: string;
+}) {
+  if (approvedLeaveLabel) return `On PTO/Leave: ${approvedLeaveLabel}`;
+  if (!hasRosterForMonth) return "No roster set";
+  if (dayOffLabel !== "None") {
+    return schedule
+      ? `${getManilaWeekday(today)} · ${formatWorkScheduleTimeRange(schedule, false)}`
+      : `${getManilaWeekday(today)} · Day Off`;
+  }
+
+  return assignedDayOff ? `Day off: ${assignedDayOff}` : "No roster set";
+}
+
+function formatWorkScheduleDisplay(schedule: WorkScheduleRow) {
+  return `${formatWorkScheduleTimeRange(schedule, true)} ${formatScheduleTimezone(schedule.timezone)}`;
+}
+
+function formatWorkScheduleTimeRange(schedule: WorkScheduleRow, spaced: boolean) {
+  const separator = spaced ? " - " : "-";
+
+  return `${formatTime(schedule.shift_start)}${separator}${formatTime(schedule.shift_end)}`;
+}
+
+function formatScheduleTimezone(timezone: string | null | undefined) {
+  if (!timezone || timezone === "Asia/Manila") return "MLA";
+
+  return timezone;
 }
 
 function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date()) {
