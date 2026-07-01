@@ -44,7 +44,9 @@ export async function createOperationalNotification(input: CreateNotificationInp
   }
 
   const supabase = await createClient();
-  const row = {
+  const createdAt = new Date().toISOString();
+  const row: NotificationRow = {
+    id: crypto.randomUUID(),
     recipient_role: input.recipientRole ?? null,
     recipient_employee_id: input.recipientEmployeeId ?? null,
     category: input.category,
@@ -56,30 +58,28 @@ export async function createOperationalNotification(input: CreateNotificationInp
     entity_id: input.entityId ?? null,
     metadata: input.metadata ?? {},
     idempotency_key: input.idempotencyKey ?? null,
+    is_read: false,
+    read_at: null,
+    created_at: createdAt,
   };
 
-  if (input.idempotencyKey) {
-    const { data: existing } = await supabase
-      .from("notifications")
-      .select("id")
-      .eq("idempotency_key", input.idempotencyKey)
-      .maybeSingle();
+  const { error } = await supabase.from("notifications").insert(row);
 
-    if (existing) return;
-  }
-
-  const { data, error } = await supabase
-    .from("notifications")
-    .insert(row)
-    .select("id,recipient_role,recipient_employee_id,category,type,severity,title,message,entity_type,entity_id,metadata,idempotency_key,is_read,read_at,created_at")
-    .maybeSingle();
-
-  if (error || !data) {
+  if (error) {
+    if (error.code !== "23505") {
+      console.warn("Operational notification insert failed", {
+        code: error.code,
+        category: input.category,
+        type: input.type,
+      });
+    }
     return;
   }
 
+  const notification = mapNotificationRow(row);
+
   if (input.deliverToGoogleChat !== false) {
-    await deliverExternalNotification(mapNotificationRow(data as NotificationRow));
+    await deliverExternalNotification(notification);
   }
   revalidatePath(ADMIN_NOTIFICATIONS_PATH);
   revalidatePath(MANAGER_NOTIFICATIONS_PATH);
