@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   getNotificationsForCurrentUser,
   markNotificationReadAction,
@@ -59,12 +58,12 @@ export async function NotificationBell({ role }: { role: AppRole }) {
           )}
         </div>
         <div className="border-t border-[#efe6b6] bg-white p-3">
-          <Link
+          <a
             href={viewAllHref}
             className="inline-flex h-9 w-full items-center justify-center rounded-lg bg-[#001f4d] px-3 text-sm font-black text-white transition hover:bg-[#07336f]"
           >
             View all notifications
-          </Link>
+          </a>
         </div>
       </div>
     </details>
