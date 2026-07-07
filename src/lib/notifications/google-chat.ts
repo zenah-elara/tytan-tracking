@@ -53,6 +53,7 @@ export async function sendGoogleChatNotification(
 
 function formatGoogleChatMessage(notification: OperationalNotification) {
   const employeeName = readMetadataString(notification.metadata, "employee_name");
+  const flags = readMetadataStringArray(notification.metadata, "flags");
   const appPath = getRelevantAppPath(notification);
   const lines = [
     `${getNotificationIcon(notification.type)} ${notification.title}`,
@@ -61,6 +62,10 @@ function formatGoogleChatMessage(notification: OperationalNotification) {
 
   if (employeeName && !notification.message.includes(employeeName)) {
     lines.push(`Employee: ${employeeName}`);
+  }
+
+  if (flags.length > 0) {
+    lines.push(`🚩 Flags: ${flags.join(", ")}`);
   }
 
   lines.push(`Time: ${formatManilaDateTime(notification.createdAt)}`);
@@ -103,6 +108,20 @@ function readMetadataString(
 ) {
   const value = metadata[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readMetadataStringArray(
+  metadata: Record<string, unknown>,
+  key: string,
+) {
+  const value = metadata[key];
+
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function formatManilaDateTime(value: string) {
