@@ -73,9 +73,6 @@ export function buildAvailabilitySummary({
   leaveRequests,
   leaveTypes,
   today,
-  scheduleAssignments = [],
-  schedules = [],
-  now = new Date(),
 }: {
   employees: AvailabilityEmployee[];
   departments: AvailabilityDepartment[];
@@ -85,25 +82,14 @@ export function buildAvailabilitySummary({
   today: string;
   scheduleAssignments?: AvailabilityScheduleAssignment[];
   schedules?: AvailabilityWorkSchedule[];
-  now?: Date;
 }): AvailabilitySummary {
   const departmentMap = new Map(
     departments.map((department) => [department.id, department.name]),
   );
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
   const weekday = getManilaWeekday(today);
-  const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
   const restDayItems = employees
-    .filter((employee) =>
-      isEmployeeRestDay(employee.id, today, dayOffRosters) &&
-      isRestDayShiftWindowActive(
-        employee.id,
-        today,
-        scheduleAssignments,
-        scheduleMap,
-        now,
-      ),
-    )
+    .filter((employee) => isEmployeeRestDay(employee.id, today, dayOffRosters))
     .map((employee) =>
       buildAvailabilityItem({
         employee,
@@ -147,39 +133,6 @@ export function buildAvailabilitySummary({
     leaveItems,
     totalUnavailable: unavailableEmployeeIds.size,
   };
-}
-
-function isRestDayShiftWindowActive(
-  employeeId: string,
-  date: string,
-  scheduleAssignments: AvailabilityScheduleAssignment[],
-  scheduleMap: Map<string, AvailabilityWorkSchedule>,
-  now: Date,
-) {
-  if (scheduleAssignments.length === 0 || scheduleMap.size === 0) return true;
-
-  const matchingAssignments = scheduleAssignments.filter(
-    (assignment) =>
-      assignment.employee_id === employeeId &&
-      assignment.effective_from <= date &&
-      (!assignment.effective_to || assignment.effective_to >= date),
-  );
-  const assignment =
-    matchingAssignments.find((candidate) => candidate.is_primary) ??
-    matchingAssignments[0];
-  const schedule = assignment ? scheduleMap.get(assignment.schedule_id) : null;
-
-  if (!schedule) return false;
-
-  const scheduledStart = new Date(
-    `${date}T${normalizeTime(schedule.shift_start)}+08:00`,
-  );
-
-  return now.getTime() >= scheduledStart.getTime();
-}
-
-function normalizeTime(time: string) {
-  return time.length === 5 ? `${time}:00` : time;
 }
 
 export function AvailabilitySection({
