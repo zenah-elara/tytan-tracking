@@ -44,6 +44,8 @@ type LeaveBalanceRow = {
   leave_type_id: string;
   year: number;
   balance: number;
+  used: number;
+  pending: number;
 };
 
 const BALANCE_BUCKET_BY_REQUEST_TYPE: Record<string, string> = {
@@ -72,7 +74,7 @@ export default async function AdminLeaveDeductionsPage({
       .order("end_date", { ascending: true }),
     supabase.from("employees").select("id,full_name,work_email"),
     supabase.from("leave_types").select("id,name,is_active"),
-    supabase.from("leave_balances").select("employee_id,leave_type_id,year,balance"),
+    supabase.from("leave_balances").select("employee_id,leave_type_id,year,balance,used,pending"),
   ]);
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
   const employeeIds = getRealEmployeeIds(employees);
@@ -87,7 +89,7 @@ export default async function AdminLeaveDeductionsPage({
   const balanceByKey = new Map(
     balances.map((balance) => [
       getBalanceKey(balance.employee_id, balance.leave_type_id, balance.year),
-      Number(balance.balance),
+      balance,
     ]),
   );
   const rows = requests.map((request) =>
@@ -180,7 +182,7 @@ function buildPreviewRow(
   employeeById: Map<string, EmployeeRow>,
   leaveTypeById: Map<string, LeaveTypeRow>,
   leaveTypeByName: Map<string, LeaveTypeRow>,
-  balanceByKey: Map<string, number>,
+  balanceByKey: Map<string, LeaveBalanceRow>,
 ): PreviewRow {
   const employee = employeeById.get(request.employee_id);
   const requestType = leaveTypeById.get(request.leave_type_id);
@@ -189,8 +191,16 @@ function buildPreviewRow(
     : undefined;
   const balanceType = balanceBucketName ? leaveTypeByName.get(balanceBucketName) : null;
   const year = Number.parseInt(request.start_date.slice(0, 4), 10);
-  const availableBalance = balanceType
-    ? balanceByKey.get(getBalanceKey(request.employee_id, balanceType.id, year)) ?? 0
+  const balance = balanceType
+    ? balanceByKey.get(getBalanceKey(request.employee_id, balanceType.id, year))
+    : null;
+  const availableBalance = balance
+    ? Math.max(
+        0,
+        Number(balance.balance ?? 0) -
+          Number(balance.used ?? 0) -
+          Number(balance.pending ?? 0),
+      )
     : 0;
   const requestedHours = Number(request.total_hours);
   const paidPreview = Math.min(availableBalance, requestedHours);

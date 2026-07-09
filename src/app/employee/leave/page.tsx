@@ -117,13 +117,16 @@ export default async function EmployeeLeavePage({ searchParams }: PageProps) {
                   {typeNames.get(balance.leave_type_id) ?? "Leave"}
                 </p>
                 <p className="mt-3 text-3xl font-black text-zinc-950">
-                  {formatHours(balance.balance)}
+                  {formatHours(getAvailableHours(balance))}
                 </p>
                 <div className="mt-4 grid grid-cols-3 gap-2 text-xs text-zinc-600">
                   <span>Year {balance.year}</span>
                   <span>Used {formatHours(balance.used)}</span>
                   <span>Pending {formatHours(balance.pending)}</span>
                 </div>
+                <p className="mt-2 text-xs text-zinc-500">
+                  Total bucket {formatHours(balance.balance)}
+                </p>
               </article>
             ))}
           </div>
@@ -229,6 +232,15 @@ function EmptyState({ message }: { message: string }) {
 
 function formatHours(value: number) {
   return `${value} hrs`;
+}
+
+function getAvailableHours(balance: LeaveBalanceRow) {
+  return Math.max(
+    0,
+    Number(balance.balance ?? 0) -
+      Number(balance.used ?? 0) -
+      Number(balance.pending ?? 0),
+  );
 }
 
 function formatLabel(value: string) {

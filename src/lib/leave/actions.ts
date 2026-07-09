@@ -45,6 +45,17 @@ const BALANCE_BUCKET_BY_REQUEST_TYPE: Record<string, string> = {
 };
 const DUPLICATE_REQUEST_WINDOW_MS = 2 * 60 * 1000;
 
+type BalanceAdjustmentResult = {
+  ok: true;
+  paidHours: number;
+  unpaidHours: number;
+  deductionStatus: string;
+  processingStatus: string;
+} | {
+  ok: false;
+  reason: "missing-bucket" | "balance-save-failed";
+};
+
 export type LeaveRequestSubmitState = {
   status: "idle" | "success" | "error" | "duplicate";
   message: string;
@@ -420,12 +431,12 @@ export async function processPostDateLeaveDeductionsAction(formData: FormData) {
       redirectWithStatus(ADMIN_LEAVE_DEDUCTIONS_PATH, "error", "balance-load-failed");
     }
 
-    const availableBalance = Number(balanceData?.balance ?? 0);
+    const balanceHours = Number(balanceData?.balance ?? 0);
     const usedHours = Number(balanceData?.used ?? 0);
     const pendingHours = Number(balanceData?.pending ?? 0);
+    const availableBalance = Math.max(0, balanceHours - usedHours - pendingHours);
     const paidHours = Math.min(availableBalance, requestedHours);
     const unpaidHours = Math.max(requestedHours - paidHours, 0);
-    const nextBalance = availableBalance - paidHours;
     const nextUsed = usedHours + paidHours;
     const processingstatus =
       paidHours === requestedHours
@@ -455,7 +466,7 @@ export async function processPostDateLeaveDeductionsAction(formData: FormData) {
           employee_id: request.employee_id,
           leave_type_id: balanceType.id,
           year: balanceYear,
-          balance: nextBalance,
+          balance: balanceHours,
           used: nextUsed,
           pending: pendingHours,
         },
@@ -474,7 +485,7 @@ export async function processPostDateLeaveDeductionsAction(formData: FormData) {
           leave_request_id: request.id,
           transaction_type: "deduction",
           amount: paidHours,
-          balance_after: nextBalance,
+          balance_after: Math.max(0, balanceHours - nextUsed - pendingHours),
           notes: deductionNotes,
           created_by: actor?.id ?? null,
         });
@@ -564,12 +575,24 @@ export async function submitLeaveRequestAction(formData: FormData) {
     redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
   }
 
+  const requestId = (request as { id?: string } | null)?.id;
+  const reserved = await reservePendingLeaveHours({
+    employeeId: employee.id,
+    requestLeaveTypeName: leaveType.name,
+    startDate,
+    requestedHours,
+  });
+
+  if (!reserved) {
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
+  }
+
   await notifyLeaveEvent(employee.id, {
     type: "leave_request_submitted",
     severity: "info",
     title: "Leave request submitted",
     message: `${employee.full_name} submitted ${leaveType.name} for ${requestedHours} hour(s).`,
-    requestId: (request as { id?: string } | null)?.id,
+    requestId,
     metadata: {
       leave_type: leaveType.name,
       start_date: startDate,
@@ -580,6 +603,7 @@ export async function submitLeaveRequestAction(formData: FormData) {
   });
 
   revalidatePath(EMPLOYEE_LEAVE_PATH);
+  revalidatePath(ADMIN_LEAVE_BALANCES_PATH);
   redirectWithStatus(EMPLOYEE_LEAVE_PATH, "success", "submitted");
 }
 
@@ -688,12 +712,27 @@ export async function submitLeaveRequestFormAction(
     };
   }
 
+  const requestId = (request as { id?: string } | null)?.id;
+  const reserved = await reservePendingLeaveHours({
+    employeeId: employee.id,
+    requestLeaveTypeName: leaveType.name,
+    startDate,
+    requestedHours,
+  });
+
+  if (!reserved) {
+    return {
+      status: "error",
+      message: "That request was saved, but the leave balance could not be reserved. Please contact an administrator.",
+    };
+  }
+
   await notifyLeaveEvent(employee.id, {
     type: "leave_request_submitted",
     severity: "info",
     title: "Leave request submitted",
     message: `${employee.full_name} submitted ${leaveType.name} for ${requestedHours} hour(s).`,
-    requestId: (request as { id?: string } | null)?.id,
+    requestId,
     metadata: {
       leave_type: leaveType.name,
       start_date: startDate,
@@ -706,6 +745,7 @@ export async function submitLeaveRequestFormAction(
   revalidatePath(EMPLOYEE_LEAVE_PATH);
   revalidatePath(EMPLOYEE_NEW_LEAVE_PATH);
   revalidatePath(MANAGER_LEAVE_APPROVALS_PATH);
+  revalidatePath(ADMIN_LEAVE_BALANCES_PATH);
 
   return {
     status: "success",
@@ -731,7 +771,7 @@ export async function reviewLeaveRequestAction(formData: FormData) {
   const supabase = await createClient();
   const { data: request, error: requestError } = await supabase
     .from("leave_requests")
-    .select("id,employee_id,status,total_hours,leave_types(name)")
+    .select("id,employee_id,status,start_date,total_hours,leave_types(name)")
     .eq("id", requestId)
     .maybeSingle();
 
@@ -740,7 +780,10 @@ export async function reviewLeaveRequestAction(formData: FormData) {
   }
 
   const currentStatus = request.status as LeaveRequestStatus;
-  let updateValues: Record<string, string> | null = null;
+  const requestLeaveTypeName = getLeaveTypeNameFromRequest(request);
+  const requestedHours = getLeaveRequestHours(request);
+  let updateValues: Record<string, string | number | null> | null = null;
+  let releasePendingAfterUpdate = false;
 
   if (decision === "supervisor_approve") {
     if (currentStatus !== "pending_supervisor") {
@@ -769,10 +812,34 @@ export async function reviewLeaveRequestAction(formData: FormData) {
       redirectWithStatus(returnPath, "error", "review-not-authorized");
     }
 
+    const balanceAdjustment = await approvePendingLeaveHours({
+      employeeId: request.employee_id,
+      requestLeaveTypeName,
+      startDate: (request as { start_date?: string }).start_date ?? "",
+      requestedHours,
+    });
+
+    if (!balanceAdjustment.ok) {
+      redirectWithStatus(returnPath, "error", "review-failed");
+    }
+
     updateValues = {
       status: "approved",
       adminapprovedat: new Date().toISOString(),
       adminapprovedby: reviewer.id,
+      paid_hours: balanceAdjustment.paidHours,
+      unpaid_hours: balanceAdjustment.unpaidHours,
+      deduction_status: balanceAdjustment.deductionStatus,
+      processingstatus: balanceAdjustment.processingStatus,
+      processedat: new Date().toISOString(),
+      deduction_notes: buildApprovalDeductionNotes({
+        requestId,
+        requestLeaveTypeName,
+        requestedHours,
+        paidHours: balanceAdjustment.paidHours,
+        unpaidHours: balanceAdjustment.unpaidHours,
+        reviewerEmail: reviewer.work_email,
+      }),
     };
   } else if (decision === "reject") {
     if (
@@ -795,6 +862,7 @@ export async function reviewLeaveRequestAction(formData: FormData) {
     updateValues = {
       status: "rejected",
     };
+    releasePendingAfterUpdate = true;
   }
 
   if (!updateValues) {
@@ -811,18 +879,28 @@ export async function reviewLeaveRequestAction(formData: FormData) {
     redirectWithStatus(returnPath, "error", "review-failed");
   }
 
+  if (releasePendingAfterUpdate) {
+    await releasePendingLeaveHours({
+      employeeId: request.employee_id,
+      requestLeaveTypeName,
+      startDate: (request as { start_date?: string }).start_date ?? "",
+      requestedHours,
+    });
+  }
+
   await notifyLeaveReviewEvent({
     employeeId: request.employee_id,
     requestId,
     decision,
     reviewerName: reviewer.full_name,
-    leaveTypeName: getLeaveTypeNameFromRequest(request),
-    requestedHours: getLeaveRequestHours(request),
+    leaveTypeName: requestLeaveTypeName,
+    requestedHours,
   });
 
   revalidatePath(MANAGER_LEAVE_APPROVALS_PATH);
   revalidatePath(ADMIN_LEAVE_APPROVALS_PATH);
   revalidatePath(EMPLOYEE_LEAVE_PATH);
+  revalidatePath(ADMIN_LEAVE_BALANCES_PATH);
   redirectWithStatus(returnPath, "success", "reviewed");
 }
 
@@ -838,7 +916,7 @@ export async function deleteLeaveRequestAction(formData: FormData) {
   const supabase = await createClient();
   const { data: request, error: requestError } = await supabase
     .from("leave_requests")
-    .select("id,employee_id,status")
+    .select("id,employee_id,leave_type_id,status,start_date,total_hours,paid_hours,deduction_status,leave_types(name)")
     .eq("id", requestId)
     .maybeSingle();
 
@@ -866,8 +944,296 @@ export async function deleteLeaveRequestAction(formData: FormData) {
     redirectWithStatus(returnPath, "error", "delete-failed");
   }
 
+  const requestStatus = request.status as LeaveRequestStatus;
+  const requestLeaveTypeName = getLeaveTypeNameFromRequest(request);
+  const requestedHours = getLeaveRequestHours(request);
+
+  if (requestStatus === "pending_supervisor" || requestStatus === "pending_admin") {
+    await releasePendingLeaveHours({
+      employeeId: request.employee_id,
+      requestLeaveTypeName,
+      startDate: (request as { start_date?: string }).start_date ?? "",
+      requestedHours,
+    });
+  }
+
+  if (
+    requestStatus === "approved" &&
+    ["deducted", "partially_unpaid"].includes(
+      (request as { deduction_status?: string }).deduction_status ?? "",
+    )
+  ) {
+    await reverseApprovedLeaveHours({
+      employeeId: request.employee_id,
+      requestLeaveTypeName,
+      startDate: (request as { start_date?: string }).start_date ?? "",
+      paidHours: Number((request as { paid_hours?: number }).paid_hours ?? 0),
+    });
+  }
+
   revalidateLeavePages();
   redirectWithStatus(returnPath, "success", "deleted");
+}
+
+async function reservePendingLeaveHours({
+  employeeId,
+  requestLeaveTypeName,
+  startDate,
+  requestedHours,
+}: {
+  employeeId: string;
+  requestLeaveTypeName: string;
+  startDate: string;
+  requestedHours: number;
+}) {
+  const balanceContext = await getLeaveBalanceContext({
+    employeeId,
+    requestLeaveTypeName,
+    startDate,
+  });
+
+  if (!balanceContext) return false;
+
+  const { balanceType, year, balance } = balanceContext;
+  const nextPending = Number(balance?.pending ?? 0) + requestedHours;
+
+  return upsertLeaveBalanceSnapshot({
+    employeeId,
+    leaveTypeId: balanceType.id,
+    year,
+    balance: Number(balance?.balance ?? 0),
+    used: Number(balance?.used ?? 0),
+    pending: nextPending,
+  });
+}
+
+async function approvePendingLeaveHours({
+  employeeId,
+  requestLeaveTypeName,
+  startDate,
+  requestedHours,
+}: {
+  employeeId: string;
+  requestLeaveTypeName: string;
+  startDate: string;
+  requestedHours: number;
+}): Promise<BalanceAdjustmentResult> {
+  const balanceContext = await getLeaveBalanceContext({
+    employeeId,
+    requestLeaveTypeName,
+    startDate,
+  });
+
+  if (!balanceContext) return { ok: false, reason: "missing-bucket" };
+
+  const { balanceType, year, balance } = balanceContext;
+  const balanceHours = Number(balance?.balance ?? 0);
+  const usedHours = Number(balance?.used ?? 0);
+  const pendingHours = Number(balance?.pending ?? 0);
+  const pendingAfterRelease = Math.max(0, pendingHours - requestedHours);
+  const availableForRequest = Math.max(
+    0,
+    balanceHours - usedHours - pendingAfterRelease,
+  );
+  const paidHours = Math.min(requestedHours, availableForRequest);
+  const unpaidHours = Math.max(0, requestedHours - paidHours);
+  const saved = await upsertLeaveBalanceSnapshot({
+    employeeId,
+    leaveTypeId: balanceType.id,
+    year,
+    balance: balanceHours,
+    used: usedHours + paidHours,
+    pending: pendingAfterRelease,
+  });
+
+  if (!saved) return { ok: false, reason: "balance-save-failed" };
+
+  return {
+    ok: true,
+    paidHours,
+    unpaidHours,
+    deductionStatus:
+      paidHours === requestedHours
+        ? "deducted"
+        : paidHours > 0
+          ? "partially_unpaid"
+          : "fully_unpaid",
+    processingStatus:
+      paidHours === requestedHours
+        ? "processed"
+        : paidHours > 0
+          ? "partiallyunpaid"
+          : "fullyunpaid",
+  };
+}
+
+async function releasePendingLeaveHours({
+  employeeId,
+  requestLeaveTypeName,
+  startDate,
+  requestedHours,
+}: {
+  employeeId: string;
+  requestLeaveTypeName: string;
+  startDate: string;
+  requestedHours: number;
+}) {
+  const balanceContext = await getLeaveBalanceContext({
+    employeeId,
+    requestLeaveTypeName,
+    startDate,
+  });
+
+  if (!balanceContext) return false;
+
+  const { balanceType, year, balance } = balanceContext;
+
+  if (!balance) return true;
+
+  return upsertLeaveBalanceSnapshot({
+    employeeId,
+    leaveTypeId: balanceType.id,
+    year,
+    balance: Number(balance.balance ?? 0),
+    used: Number(balance.used ?? 0),
+    pending: Math.max(0, Number(balance.pending ?? 0) - requestedHours),
+  });
+}
+
+async function reverseApprovedLeaveHours({
+  employeeId,
+  requestLeaveTypeName,
+  startDate,
+  paidHours,
+}: {
+  employeeId: string;
+  requestLeaveTypeName: string;
+  startDate: string;
+  paidHours: number;
+}) {
+  if (paidHours <= 0) return true;
+
+  const balanceContext = await getLeaveBalanceContext({
+    employeeId,
+    requestLeaveTypeName,
+    startDate,
+  });
+
+  if (!balanceContext?.balance) return false;
+
+  const { balanceType, year, balance } = balanceContext;
+
+  return upsertLeaveBalanceSnapshot({
+    employeeId,
+    leaveTypeId: balanceType.id,
+    year,
+    balance: Number(balance.balance ?? 0),
+    used: Math.max(0, Number(balance.used ?? 0) - paidHours),
+    pending: Number(balance.pending ?? 0),
+  });
+}
+
+async function getLeaveBalanceContext({
+  employeeId,
+  requestLeaveTypeName,
+  startDate,
+}: {
+  employeeId: string;
+  requestLeaveTypeName: string;
+  startDate: string;
+}) {
+  const balanceBucketName = BALANCE_BUCKET_BY_REQUEST_TYPE[requestLeaveTypeName];
+
+  if (!balanceBucketName) return null;
+
+  const supabase = await createClient();
+  const year = getLeaveBalanceYear(startDate);
+  const { data: balanceType } = await supabase
+    .from("leave_types")
+    .select("id,name")
+    .eq("name", balanceBucketName)
+    .maybeSingle();
+  const typedBalanceType = balanceType as { id: string; name: string } | null;
+
+  if (!typedBalanceType) return null;
+
+  const { data: balance } = await supabase
+    .from("leave_balances")
+    .select("balance,used,pending")
+    .eq("employee_id", employeeId)
+    .eq("leave_type_id", typedBalanceType.id)
+    .eq("year", year)
+    .maybeSingle();
+
+  return {
+    balanceType: typedBalanceType,
+    year,
+    balance: balance as
+      | { balance: number; used: number; pending: number }
+      | null,
+  };
+}
+
+async function upsertLeaveBalanceSnapshot({
+  employeeId,
+  leaveTypeId,
+  year,
+  balance,
+  used,
+  pending,
+}: {
+  employeeId: string;
+  leaveTypeId: string;
+  year: number;
+  balance: number;
+  used: number;
+  pending: number;
+}) {
+  const supabase = await createClient();
+  const { error } = await supabase.from("leave_balances").upsert(
+    {
+      employee_id: employeeId,
+      leave_type_id: leaveTypeId,
+      year,
+      balance,
+      used,
+      pending,
+    },
+    { onConflict: "employee_id,leave_type_id,year" },
+  );
+
+  return !error;
+}
+
+function getLeaveBalanceYear(startDate: string) {
+  const year = Number.parseInt(startDate.slice(0, 4), 10);
+
+  return Number.isFinite(year) ? year : new Date().getFullYear();
+}
+
+function buildApprovalDeductionNotes({
+  requestId,
+  requestLeaveTypeName,
+  requestedHours,
+  paidHours,
+  unpaidHours,
+  reviewerEmail,
+}: {
+  requestId: string;
+  requestLeaveTypeName: string;
+  requestedHours: number;
+  paidHours: number;
+  unpaidHours: number;
+  reviewerEmail: string;
+}) {
+  return [
+    `Final approval balance update for request ${requestId}.`,
+    `Requested ${requestedHours} hrs from ${requestLeaveTypeName}.`,
+    `Paid ${paidHours} hrs; unpaid ${unpaidHours} hrs.`,
+    reviewerEmail ? `Approved by ${reviewerEmail}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 async function getCurrentEmployee() {

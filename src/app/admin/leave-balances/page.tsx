@@ -408,8 +408,9 @@ function EmployeeBalanceCard({
                 {balance.year}
               </span>
             </div>
-            <dl className="mt-3 grid min-w-0 gap-2 text-sm sm:grid-cols-3">
-              <Metric label="Balance" value={formatHours(balance.balance)} prominent />
+            <dl className="mt-3 grid min-w-0 gap-2 text-sm sm:grid-cols-4">
+              <Metric label="Available" value={formatHours(getAvailableHours(balance))} prominent />
+              <Metric label="Total" value={formatHours(balance.balance)} />
               <Metric label="Used" value={formatHours(balance.used)} />
               <Metric label="Pending" value={formatHours(balance.pending)} />
             </dl>
@@ -458,6 +459,15 @@ function EmptyState({ message }: { message: string }) {
 
 function formatHours(value: number) {
   return `${value} hrs`;
+}
+
+function getAvailableHours(balance: LeaveBalanceRow) {
+  return Math.max(
+    0,
+    Number(balance.balance ?? 0) -
+      Number(balance.used ?? 0) -
+      Number(balance.pending ?? 0),
+  );
 }
 
 function groupBalancesByEmployee(
