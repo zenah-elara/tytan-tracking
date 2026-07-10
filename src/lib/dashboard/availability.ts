@@ -7,7 +7,9 @@ import {
   isEligibleActiveTytanEmployee,
   isRealTytanEmployee,
 } from "@/lib/employees/filters";
+import { getSupabaseAdminConfigStatus } from "@/lib/supabase/config";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 
 type EmployeeRow = {
   id: string;
@@ -57,15 +59,27 @@ type WorkScheduleRow = {
 };
 
 export async function getDashboardAvailabilitySummary() {
-  const supabase = createAdminClient();
+  try {
+    return await loadDashboardAvailabilitySummary();
+  } catch (error) {
+    console.error("Dashboard availability summary failed", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+
+    return createEmptyAvailabilitySummary();
+  }
+}
+
+async function loadDashboardAvailabilitySummary() {
+  const supabase = await createAvailabilityClient();
   const [
-    { data: employeeData },
-    { data: departmentData },
-    { data: leaveData },
-    { data: leaveTypeData },
-    { data: dayOffData },
-    { data: scheduleAssignmentData },
-    { data: scheduleData },
+    employeeResult,
+    departmentResult,
+    leaveResult,
+    leaveTypeResult,
+    dayOffResult,
+    scheduleAssignmentResult,
+    scheduleResult,
   ] = await Promise.all([
     supabase
       .from("employees")
@@ -89,6 +103,21 @@ export async function getDashboardAvailabilitySummary() {
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,shift_start,shift_end"),
   ]);
+  logQueryError("employees", employeeResult.error);
+  logQueryError("departments", departmentResult.error);
+  logQueryError("leave_requests", leaveResult.error);
+  logQueryError("leave_types", leaveTypeResult.error);
+  logQueryError("monthly_day_off_rosters", dayOffResult.error);
+  logQueryError("employee_schedule_assignments", scheduleAssignmentResult.error);
+  logQueryError("work_schedules", scheduleResult.error);
+
+  const employeeData = employeeResult.data;
+  const departmentData = departmentResult.data;
+  const leaveData = leaveResult.data;
+  const leaveTypeData = leaveTypeResult.data;
+  const dayOffData = dayOffResult.data;
+  const scheduleAssignmentData = scheduleAssignmentResult.data;
+  const scheduleData = scheduleResult.data;
   const employees = ((employeeData ?? []) as EmployeeRow[])
     .filter(isRealTytanEmployee)
     .filter(isEligibleActiveTytanEmployee);
@@ -121,6 +150,48 @@ export async function getDashboardAvailabilitySummary() {
       schedules,
     }),
   };
+}
+
+async function createAvailabilityClient() {
+  const adminStatus = getSupabaseAdminConfigStatus();
+
+  if (adminStatus.isConfigured) {
+    return createAdminClient();
+  }
+
+  console.warn("Dashboard availability is using scoped session access", {
+    missingKeys: adminStatus.missingKeys,
+  });
+
+  return createClient();
+}
+
+function createEmptyAvailabilitySummary() {
+  const today = getManilaDateString(new Date());
+
+  return {
+    today,
+    summary: buildAvailabilitySummary({
+      employees: [],
+      departments: [],
+      dayOffRosters: [],
+      leaveRequests: [],
+      leaveTypes: [],
+      today,
+      scheduleAssignments: [],
+      schedules: [],
+    }),
+  };
+}
+
+function logQueryError(table: string, error: { message: string; code?: string } | null) {
+  if (!error) return;
+
+  console.error("Dashboard availability query failed", {
+    table,
+    code: error.code,
+    message: error.message,
+  });
 }
 
 function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date()) {
