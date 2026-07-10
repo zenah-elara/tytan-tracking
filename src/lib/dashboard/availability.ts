@@ -7,7 +7,7 @@ import {
   isEligibleActiveTytanEmployee,
   isRealTytanEmployee,
 } from "@/lib/employees/filters";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 type EmployeeRow = {
   id: string;
@@ -57,7 +57,7 @@ type WorkScheduleRow = {
 };
 
 export async function getDashboardAvailabilitySummary() {
-  const supabase = await createClient();
+  const supabase = createAdminClient();
   const [
     { data: employeeData },
     { data: departmentData },
@@ -110,11 +110,6 @@ export async function getDashboardAvailabilitySummary() {
 
   return {
     today,
-    employees,
-    departments,
-    dayOffRosters,
-    scheduleAssignments,
-    schedules,
     summary: buildAvailabilitySummary({
       employees,
       departments,
