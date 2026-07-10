@@ -1,18 +1,16 @@
 import Link from "next/link";
 import {
   AvailabilitySection,
-  buildAvailabilitySummary,
 } from "@/components/dashboard/availability-section";
 import { CompanyAnnouncementCard } from "@/components/dashboard/company-announcement-card";
 import {
   getCreditedClockMinutes,
   getRenderedGrossMinutes,
   isStaleOpenClockSession,
-  STALE_OPEN_SESSION_GRACE_MINUTES,
 } from "@/lib/clock/duration";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
-import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
+import { getDashboardAvailabilitySummary } from "@/lib/dashboard/availability";
 import {
   getManilaWeekday,
   getMonthlyRosterAssignedDayOff,
@@ -27,15 +25,6 @@ type EmployeeRow = {
   full_name: string;
   work_email: string;
   department_id: string | null;
-};
-
-type CompanyEmployeeRow = EmployeeRow & {
-  employment_status: string;
-};
-
-type DepartmentRow = {
-  id: string;
-  name: string;
 };
 
 type ClockSessionRow = {
@@ -72,10 +61,6 @@ type LeaveRequestRow = {
   total_hours: number;
   status: string;
   deletedat: string | null;
-};
-
-type AvailabilityLeaveRequestRow = LeaveRequestRow & {
-  employee_id: string;
 };
 
 type DayOffRosterRow = {
@@ -124,12 +109,8 @@ export default async function EmployeePage() {
     { data: dayOffData },
     { data: scheduleAssignmentData },
     { data: scheduleData },
-    { data: companyEmployeeData },
-    { data: departmentData },
-    { data: availabilityLeaveData },
-    { data: companyDayOffData },
-    { data: companyScheduleAssignmentData },
     announcements,
+    dashboardAvailability,
   ] = await Promise.all([
     supabase
       .from("clock_sessions")
@@ -162,26 +143,8 @@ export default async function EmployeePage() {
       .eq("employee_id", employee.id)
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,name,shift_start,shift_end,timezone"),
-    supabase
-      .from("employees")
-      .select("id,full_name,work_email,department_id,employment_status")
-      .order("full_name", { ascending: true }),
-    supabase.from("departments").select("id,name").order("name", { ascending: true }),
-    supabase
-      .from("leave_requests")
-      .select("id,employee_id,leave_type_id,start_date,end_date,total_hours,status,deletedat")
-      .eq("status", "approved")
-      .is("deletedat", null)
-      .limit(500),
-    supabase
-      .from("monthly_day_off_rosters")
-      .select("employeeid,month,dayoff")
-      .limit(1000),
-    supabase
-      .from("employee_schedule_assignments")
-      .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
-      .order("effective_from", { ascending: false }),
     getActiveCompanyAnnouncements(),
+    getDashboardAvailabilitySummary(),
   ]);
   const sessions = (sessionData ?? []) as ClockSessionRow[];
   const balances = (balanceData ?? []) as LeaveBalanceRow[];
@@ -191,34 +154,9 @@ export default async function EmployeePage() {
   const scheduleAssignments =
     (scheduleAssignmentData ?? []) as ScheduleAssignmentRow[];
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
-  const today = getDefaultOperationalDate(schedules);
+  const today = dashboardAvailability.today;
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
-  const companyEmployees = ((companyEmployeeData ?? []) as CompanyEmployeeRow[])
-    .filter(isRealTytanEmployee)
-    .filter(isEligibleActiveTytanEmployee);
-  const companyEmployeeIds = new Set(companyEmployees.map((row) => row.id));
-  const departments = (departmentData ?? []) as DepartmentRow[];
-  const availabilityLeaveRequests =
-    ((availabilityLeaveData ?? []) as AvailabilityLeaveRequestRow[]).filter((request) =>
-      companyEmployeeIds.has(request.employee_id),
-    );
-  const companyDayOffRosters = ((companyDayOffData ?? []) as DayOffRosterRow[]).filter((row) =>
-    companyEmployeeIds.has(row.employeeid),
-  );
-  const companyScheduleAssignments =
-    ((companyScheduleAssignmentData ?? []) as ScheduleAssignmentRow[]).filter((assignment) =>
-      companyEmployeeIds.has(assignment.employee_id),
-    );
-  const availabilitySummary = buildAvailabilitySummary({
-    employees: companyEmployees,
-    departments,
-    dayOffRosters: companyDayOffRosters,
-    leaveRequests: availabilityLeaveRequests,
-    leaveTypes,
-    today,
-    scheduleAssignments: companyScheduleAssignments,
-    schedules,
-  });
+  const availabilitySummary = dashboardAvailability.summary;
   const schedule = findCurrentSchedule(scheduleAssignments, schedules);
   const openSession =
     sessions.find(
@@ -617,26 +555,6 @@ function formatScheduleTimezone(timezone: string | null | undefined) {
   return timezone;
 }
 
-function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date()) {
-  const today = getManilaDateString(now);
-  const previousDate = addDays(today, -1);
-  const nowTime = now.getTime();
-  const isWithinActiveOvernightShift = schedules.some((schedule) => {
-    if (normalizeTime(schedule.shift_end) > normalizeTime(schedule.shift_start)) {
-      return false;
-    }
-
-    const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
-    const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
-    const cutoff =
-      scheduledEnd.getTime() + STALE_OPEN_SESSION_GRACE_MINUTES * 60 * 1000;
-
-    return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
-  });
-
-  return isWithinActiveOvernightShift ? previousDate : today;
-}
-
 function getManilaDateString(date: Date) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Manila",
@@ -649,16 +567,6 @@ function getManilaDateString(date: Date) {
   const day = parts.find((part) => part.type === "day")?.value;
 
   return `${year}-${month}-${day}`;
-}
-
-function addDays(date: string, days: number) {
-  const value = new Date(`${date}T00:00:00+08:00`);
-  value.setUTCDate(value.getUTCDate() + days);
-  return getManilaDateString(value);
-}
-
-function getScheduledDateTime(date: string, time: string) {
-  return new Date(`${date}T${normalizeTime(time)}+08:00`);
 }
 
 function normalizeTime(time: string) {

@@ -3,14 +3,13 @@ import type { ClockSessionStatus } from "@/types/clock";
 import {
   getCreditedClockMinutes,
   isCurrentOpenClockSession,
-  STALE_OPEN_SESSION_GRACE_MINUTES,
 } from "@/lib/clock/duration";
 import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import {
   AvailabilitySection,
-  buildAvailabilitySummary,
 } from "@/components/dashboard/availability-section";
 import { CompanyAnnouncementCard } from "@/components/dashboard/company-announcement-card";
+import { getDashboardAvailabilitySummary } from "@/lib/dashboard/availability";
 import { getRealEmployeeIds, isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
 import {
   getMonthlyRosterDayOffLabel,
@@ -163,6 +162,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
     { data: scheduleAssignmentData },
     { data: scheduleData },
     announcements,
+    dashboardAvailability,
   ] = await Promise.all([
     supabase
       .from("employees")
@@ -196,6 +196,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
     getActiveCompanyAnnouncements(),
+    getDashboardAvailabilitySummary(),
   ]);
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
   const employeeIds = getRealEmployeeIds(employees);
@@ -213,7 +214,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
       employeeIds.has(assignment.employee_id),
     );
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
-  const today = getDefaultOperationalDate(schedules);
+  const today = dashboardAvailability.today;
   const operationalMonthStart = getRosterMonthStart(today);
   const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
   const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
@@ -240,16 +241,7 @@ export default async function AdminPage({ searchParams }: PageProps) {
       request.start_date <= today &&
       request.end_date >= today,
   );
-  const availabilitySummary = buildAvailabilitySummary({
-    employees: activeEmployees,
-    departments,
-    dayOffRosters,
-    leaveRequests: todaysApprovedLeave,
-    leaveTypes,
-    today,
-    scheduleAssignments,
-    schedules,
-  });
+  const availabilitySummary = dashboardAvailability.summary;
   const allOperationItems = dedupeOperationItems(
     sessions.map((session) =>
       buildOperationItem({
@@ -653,26 +645,6 @@ function isOperationalSessionForDate(
     ) &&
     session.workdate === addDays(date, -1)
   );
-}
-
-function getDefaultOperationalDate(schedules: WorkScheduleRow[], now = new Date()) {
-  const today = getManilaDateString(now);
-  const previousDate = addDays(today, -1);
-  const nowTime = now.getTime();
-  const isWithinActiveOvernightShift = schedules.some((schedule) => {
-    if (normalizeTime(schedule.shift_end) > normalizeTime(schedule.shift_start)) {
-      return false;
-    }
-
-    const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
-    const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
-    const cutoff =
-      scheduledEnd.getTime() + STALE_OPEN_SESSION_GRACE_MINUTES * 60 * 1000;
-
-    return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
-  });
-
-  return isWithinActiveOvernightShift ? previousDate : today;
 }
 
 function DashboardSection({
