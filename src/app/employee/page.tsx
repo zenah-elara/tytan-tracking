@@ -290,10 +290,10 @@ export default async function EmployeePage() {
                 <MetricCard
                   key={balance.id}
                   label={leaveTypeMap.get(balance.leave_type_id) ?? "Leave"}
-                  value={formatHours(balance.balance)}
+                  value={formatHours(getAvailableHours(balance))}
                   detail={`Used ${formatHours(balance.used)} · Pending ${formatHours(
                     balance.pending,
-                  )}`}
+                  )} · Total ${formatHours(balance.balance)}`}
                 />
               ))}
             </div>
@@ -600,6 +600,15 @@ function formatMinutes(value: number) {
 
 function formatHours(value: number) {
   return `${value} hrs`;
+}
+
+function getAvailableHours(balance: LeaveBalanceRow) {
+  return Math.max(
+    0,
+    Number(balance.balance ?? 0) -
+      Number(balance.used ?? 0) -
+      Number(balance.pending ?? 0),
+  );
 }
 
 function formatLabel(value: string) {
