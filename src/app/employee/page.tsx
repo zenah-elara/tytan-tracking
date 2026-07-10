@@ -128,6 +128,7 @@ export default async function EmployeePage() {
     { data: departmentData },
     { data: availabilityLeaveData },
     { data: companyDayOffData },
+    { data: companyScheduleAssignmentData },
     announcements,
   ] = await Promise.all([
     supabase
@@ -176,6 +177,10 @@ export default async function EmployeePage() {
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
       .limit(1000),
+    supabase
+      .from("employee_schedule_assignments")
+      .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
+      .order("effective_from", { ascending: false }),
     getActiveCompanyAnnouncements(),
   ]);
   const sessions = (sessionData ?? []) as ClockSessionRow[];
@@ -200,6 +205,10 @@ export default async function EmployeePage() {
   const companyDayOffRosters = ((companyDayOffData ?? []) as DayOffRosterRow[]).filter((row) =>
     companyEmployeeIds.has(row.employeeid),
   );
+  const companyScheduleAssignments =
+    ((companyScheduleAssignmentData ?? []) as ScheduleAssignmentRow[]).filter((assignment) =>
+      companyEmployeeIds.has(assignment.employee_id),
+    );
   const availabilitySummary = buildAvailabilitySummary({
     employees: companyEmployees,
     departments,
@@ -207,6 +216,8 @@ export default async function EmployeePage() {
     leaveRequests: availabilityLeaveRequests,
     leaveTypes,
     today,
+    scheduleAssignments: companyScheduleAssignments,
+    schedules,
   });
   const schedule = findCurrentSchedule(scheduleAssignments, schedules);
   const openSession =
