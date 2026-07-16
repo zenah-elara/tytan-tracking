@@ -61,6 +61,7 @@ type PayrollLog = {
   breakMinutes: number;
   grossMinutes: number;
   renderedMinutes: number;
+  isCompleted: boolean;
 };
 
 type PayrollCrewGroup = {
@@ -72,6 +73,9 @@ type PayrollCrewGroup = {
   totalRenderedMinutes: number;
   totalBreakMinutes: number;
   totalGrossMinutes: number;
+  completedLogsCount: number;
+  openLogsCount: number;
+  missingClockOutCount: number;
 };
 
 type NormalizedSearchParams = Required<Pick<PayrollReportSearchParams, "from" | "to">>;
@@ -137,13 +141,17 @@ export async function PayrollReportPage({
     departmentMap,
     scheduleAssignments,
     scheduleMap,
-  }).filter((group) => group.totalRenderedMinutes > 0);
+  }).filter((group) => group.logs.length > 0);
   const csvHref = buildCsvHref(groups, range);
   const totalRenderedMinutes = groups.reduce(
     (total, group) => total + group.totalRenderedMinutes,
     0,
   );
-  const totalLogs = groups.reduce((total, group) => total + group.logs.length, 0);
+  const totalLogs = groups.reduce(
+    (total, group) => total + group.completedLogsCount,
+    0,
+  );
+  const crewWithHours = groups.filter((group) => group.totalRenderedMinutes > 0).length;
 
   return (
     <div className="grid max-w-full gap-5 overflow-hidden">
@@ -177,9 +185,9 @@ export async function PayrollReportPage({
 
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Pay period" value={`${range.from} to ${range.to}`} />
-        <SummaryCard label="Crew with hours" value={String(groups.length)} />
+        <SummaryCard label="Crew with hours" value={String(crewWithHours)} />
         <SummaryCard label="Rendered hours" value={formatHours(totalRenderedMinutes)} />
-        <SummaryCard label="Shifts/logs" value={String(totalLogs)} />
+        <SummaryCard label="Completed logs" value={String(totalLogs)} />
       </section>
 
       {groups.length === 0 ? (
@@ -217,7 +225,14 @@ export async function PayrollReportPage({
                     <td className="px-5 py-4 font-black text-[#001f4d]">
                       {formatHours(group.totalRenderedMinutes)}
                     </td>
-                    <td className="px-5 py-4 text-zinc-600">{group.logs.length}</td>
+                    <td className="px-5 py-4 text-zinc-600">
+                      {group.completedLogsCount}
+                      {group.openLogsCount > 0 ? (
+                        <span className="mt-1 block text-xs text-amber-700">
+                          {group.openLogsCount} open excluded
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="px-5 py-4 text-zinc-600">
                       {getGroupStatusNote(group)}
                     </td>
@@ -307,7 +322,11 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
           <h2 className="text-base font-black text-[#001f4d]">{group.employeeName}</h2>
           <p className="mt-1 text-xs text-zinc-500">
             {group.departmentName} · {formatHours(group.totalRenderedMinutes)} ·{" "}
-            {group.logs.length} log{group.logs.length === 1 ? "" : "s"}
+            {group.completedLogsCount} completed log
+            {group.completedLogsCount === 1 ? "" : "s"}
+            {group.openLogsCount > 0
+              ? ` · ${group.openLogsCount} open excluded`
+              : ""}
           </p>
         </div>
         <span className="inline-flex w-fit rounded-full border border-[#efe6b6] bg-[#fffdf2] px-3 py-1 text-xs font-black text-[#001f4d] group-open:hidden">
@@ -342,6 +361,11 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
                 <td className="px-5 py-4 text-zinc-600">{log.breakMinutes}</td>
                 <td className="px-5 py-4 font-semibold text-[#001f4d]">
                   {formatHours(log.renderedMinutes)}
+                  {!log.isCompleted ? (
+                    <span className="mt-1 block text-xs font-bold text-amber-700">
+                      Excluded from payroll total
+                    </span>
+                  ) : null}
                 </td>
                 <td className="px-5 py-4">
                   <StatusBadge status={log.status} />
@@ -375,8 +399,8 @@ function groupPayrollLogs({
     if (!employee) continue;
 
     const schedule = findScheduleForSession(session, scheduleAssignments, scheduleMap);
-    const renderedMinutes = getCreditedClockMinutes(session, schedule);
-    if (renderedMinutes <= 0) continue;
+    const isCompleted = isCompletedPayrollSession(session);
+    const renderedMinutes = isCompleted ? getCreditedClockMinutes(session, schedule) : 0;
 
     const departmentName = employee.department_id
       ? departmentMap.get(employee.department_id) ?? "Unassigned"
@@ -390,6 +414,9 @@ function groupPayrollLogs({
       totalRenderedMinutes: 0,
       totalBreakMinutes: 0,
       totalGrossMinutes: 0,
+      completedLogsCount: 0,
+      openLogsCount: 0,
+      missingClockOutCount: 0,
     };
     const log = {
       id: session.id,
@@ -398,20 +425,36 @@ function groupPayrollLogs({
       clockoutat: session.clockoutat,
       status: session.status,
       breakMinutes: Math.max(0, Number(session.breakminutes ?? 0)),
-      grossMinutes: getRenderedGrossMinutes(session, schedule),
+      grossMinutes: isCompleted ? getRenderedGrossMinutes(session, schedule) : 0,
       renderedMinutes,
+      isCompleted,
     } satisfies PayrollLog;
 
     existing.logs.push(log);
-    existing.totalRenderedMinutes += log.renderedMinutes;
-    existing.totalBreakMinutes += log.breakMinutes;
-    existing.totalGrossMinutes += log.grossMinutes;
+    if (log.isCompleted) {
+      existing.totalRenderedMinutes += log.renderedMinutes;
+      existing.totalBreakMinutes += log.breakMinutes;
+      existing.totalGrossMinutes += log.grossMinutes;
+      existing.completedLogsCount += 1;
+    } else if (isOpenPayrollSession(session)) {
+      existing.openLogsCount += 1;
+    } else if (!session.clockoutat) {
+      existing.missingClockOutCount += 1;
+    }
     groups.set(employee.id, existing);
   }
 
   return Array.from(groups.values()).sort((first, second) =>
     first.employeeName.localeCompare(second.employeeName),
   );
+}
+
+function isCompletedPayrollSession(session: ClockSessionRow) {
+  return session.status === "completed" && Boolean(session.clockoutat);
+}
+
+function isOpenPayrollSession(session: ClockSessionRow) {
+  return session.status === "active" || session.status === "on_break";
 }
 
 function findScheduleForSession(
@@ -433,47 +476,50 @@ function findScheduleForSession(
 }
 
 function getGroupStatusNote(group: PayrollCrewGroup) {
-  const openLogs = group.logs.filter(
-    (log) => log.status === "active" || log.status === "on_break",
-  ).length;
-  const missingClockOuts = group.logs.filter(
-    (log) => !log.clockoutat && log.status !== "active" && log.status !== "on_break",
-  ).length;
+  const notes: string[] = [];
 
-  if (openLogs > 0) return `${openLogs} in-progress log${openLogs === 1 ? "" : "s"}`;
-  if (missingClockOuts > 0) {
-    return `${missingClockOuts} missing clock-out log${missingClockOuts === 1 ? "" : "s"}`;
+  if (group.openLogsCount > 0) {
+    notes.push(
+      `${group.openLogsCount} in-progress/open log${
+        group.openLogsCount === 1 ? "" : "s"
+      } excluded`,
+    );
   }
-  return "Ready for hours review";
+  if (group.missingClockOutCount > 0) {
+    notes.push(
+      `${group.missingClockOutCount} missing clock-out log${
+        group.missingClockOutCount === 1 ? "" : "s"
+      } excluded`,
+    );
+  }
+  if (group.completedLogsCount === 0) notes.push("No completed payroll logs");
+
+  return notes.length > 0 ? notes.join("; ") : "Ready for hours review";
 }
 
 function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams) {
   const headers = [
-    "Pay Period Start",
-    "Pay Period End",
-    "Crew Member",
+    "Employee Name",
+    "Work Email",
     "Department",
-    "Work Date",
-    "Clock In",
-    "Clock Out",
-    "Break Minutes",
-    "Rendered Hours",
-    "Status",
+    "Date From",
+    "Date To",
+    "Total Rendered Hours",
+    "Completed Logs Count",
+    "In-Progress/Open Logs Count",
+    "Status/Notes",
   ];
-  const rows = groups.flatMap((group) =>
-    group.logs.map((log) => [
-      range.from,
-      range.to,
-      group.employeeName,
-      group.departmentName,
-      log.workdate,
-      formatDateTime(log.clockinat),
-      log.clockoutat ? formatDateTime(log.clockoutat) : "",
-      String(log.breakMinutes),
-      formatDecimalHours(log.renderedMinutes),
-      formatStatus(log.status),
-    ]),
-  );
+  const rows = groups.map((group) => [
+    group.employeeName,
+    group.employeeEmail,
+    group.departmentName,
+    range.from,
+    range.to,
+    formatDecimalHours(group.totalRenderedMinutes),
+    String(group.completedLogsCount),
+    String(group.openLogsCount),
+    getGroupStatusNote(group),
+  ]);
   const csv = [headers, ...rows]
     .map((row) => row.map(escapeCsvCell).join(","))
     .join("\n");
