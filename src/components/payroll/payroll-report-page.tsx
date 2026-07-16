@@ -1,7 +1,9 @@
 import { connection } from "next/server";
 import {
   getCreditedClockMinutes,
+  getExpectedScheduledShiftMinutes,
   getRenderedGrossMinutes,
+  MAX_CREDITED_SHIFT_MINUTES,
 } from "@/lib/clock/duration";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
 import { createClient } from "@/lib/supabase/server";
@@ -61,6 +63,7 @@ type PayrollLog = {
   breakMinutes: number;
   grossMinutes: number;
   renderedMinutes: number;
+  dailyCapMinutes: number;
   isCompleted: boolean;
 };
 
@@ -74,8 +77,10 @@ type PayrollCrewGroup = {
   totalBreakMinutes: number;
   totalGrossMinutes: number;
   completedLogsCount: number;
+  completedOperationalDaysCount: number;
   openLogsCount: number;
   missingClockOutCount: number;
+  duplicateCompletedLogsCount: number;
 };
 
 type NormalizedSearchParams = Required<Pick<PayrollReportSearchParams, "from" | "to">>;
@@ -208,7 +213,7 @@ export async function PayrollReportPage({
                   <th className="w-72 px-5 py-3">Crew Member</th>
                   <th className="w-56 px-5 py-3">Department</th>
                   <th className="w-40 px-5 py-3">Total rendered hours</th>
-                  <th className="w-36 px-5 py-3">Shifts/logs</th>
+                  <th className="w-36 px-5 py-3">Days/logs</th>
                   <th className="w-56 px-5 py-3">Status/Notes</th>
                 </tr>
               </thead>
@@ -226,7 +231,10 @@ export async function PayrollReportPage({
                       {formatHours(group.totalRenderedMinutes)}
                     </td>
                     <td className="px-5 py-4 text-zinc-600">
-                      {group.completedLogsCount}
+                      {group.completedOperationalDaysCount} day
+                      {group.completedOperationalDaysCount === 1 ? "" : "s"} /{" "}
+                      {group.completedLogsCount} log
+                      {group.completedLogsCount === 1 ? "" : "s"}
                       {group.openLogsCount > 0 ? (
                         <span className="mt-1 block text-xs text-amber-700">
                           {group.openLogsCount} open excluded
@@ -322,6 +330,8 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
           <h2 className="text-base font-black text-[#001f4d]">{group.employeeName}</h2>
           <p className="mt-1 text-xs text-zinc-500">
             {group.departmentName} · {formatHours(group.totalRenderedMinutes)} ·{" "}
+            {group.completedOperationalDaysCount} completed day
+            {group.completedOperationalDaysCount === 1 ? "" : "s"} ·{" "}
             {group.completedLogsCount} completed log
             {group.completedLogsCount === 1 ? "" : "s"}
             {group.openLogsCount > 0
@@ -415,8 +425,10 @@ function groupPayrollLogs({
       totalBreakMinutes: 0,
       totalGrossMinutes: 0,
       completedLogsCount: 0,
+      completedOperationalDaysCount: 0,
       openLogsCount: 0,
       missingClockOutCount: 0,
+      duplicateCompletedLogsCount: 0,
     };
     const log = {
       id: session.id,
@@ -427,14 +439,12 @@ function groupPayrollLogs({
       breakMinutes: Math.max(0, Number(session.breakminutes ?? 0)),
       grossMinutes: isCompleted ? getRenderedGrossMinutes(session, schedule) : 0,
       renderedMinutes,
+      dailyCapMinutes: getDailyCapMinutes(schedule),
       isCompleted,
     } satisfies PayrollLog;
 
     existing.logs.push(log);
     if (log.isCompleted) {
-      existing.totalRenderedMinutes += log.renderedMinutes;
-      existing.totalBreakMinutes += log.breakMinutes;
-      existing.totalGrossMinutes += log.grossMinutes;
       existing.completedLogsCount += 1;
     } else if (isOpenPayrollSession(session)) {
       existing.openLogsCount += 1;
@@ -444,8 +454,67 @@ function groupPayrollLogs({
     groups.set(employee.id, existing);
   }
 
+  for (const group of groups.values()) {
+    applyDailyPayrollTotals(group);
+  }
+
   return Array.from(groups.values()).sort((first, second) =>
     first.employeeName.localeCompare(second.employeeName),
+  );
+}
+
+function applyDailyPayrollTotals(group: PayrollCrewGroup) {
+  const dailyBuckets = new Map<
+    string,
+    {
+      grossMinutes: number;
+      breakMinutes: number;
+      renderedMinutes: number;
+      dailyCapMinutes: number;
+      logsCount: number;
+    }
+  >();
+
+  for (const log of group.logs) {
+    if (!log.isCompleted) continue;
+
+    const existing = dailyBuckets.get(log.workdate) ?? {
+      grossMinutes: 0,
+      breakMinutes: 0,
+      renderedMinutes: 0,
+      dailyCapMinutes: 0,
+      logsCount: 0,
+    };
+
+    existing.grossMinutes += log.grossMinutes;
+    existing.breakMinutes += log.breakMinutes;
+    existing.renderedMinutes += log.renderedMinutes;
+    existing.dailyCapMinutes = Math.max(existing.dailyCapMinutes, log.dailyCapMinutes);
+    existing.logsCount += 1;
+    dailyBuckets.set(log.workdate, existing);
+  }
+
+  group.totalRenderedMinutes = 0;
+  group.totalBreakMinutes = 0;
+  group.totalGrossMinutes = 0;
+  group.completedOperationalDaysCount = dailyBuckets.size;
+  group.duplicateCompletedLogsCount = 0;
+
+  for (const bucket of dailyBuckets.values()) {
+    group.totalRenderedMinutes += Math.min(
+      bucket.renderedMinutes,
+      bucket.dailyCapMinutes || MAX_CREDITED_SHIFT_MINUTES,
+    );
+    group.totalBreakMinutes += bucket.breakMinutes;
+    group.totalGrossMinutes += bucket.grossMinutes;
+    group.duplicateCompletedLogsCount += Math.max(0, bucket.logsCount - 1);
+  }
+}
+
+function getDailyCapMinutes(schedule: WorkScheduleRow | null) {
+  return Math.min(
+    getExpectedScheduledShiftMinutes(schedule),
+    MAX_CREDITED_SHIFT_MINUTES,
   );
 }
 
@@ -492,6 +561,13 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
       } excluded`,
     );
   }
+  if (group.duplicateCompletedLogsCount > 0) {
+    notes.push(
+      `${group.duplicateCompletedLogsCount} duplicate/same-day completed log${
+        group.duplicateCompletedLogsCount === 1 ? "" : "s"
+      } capped by operational day`,
+    );
+  }
   if (group.completedLogsCount === 0) notes.push("No completed payroll logs");
 
   return notes.length > 0 ? notes.join("; ") : "Ready for hours review";
@@ -505,6 +581,7 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
     "Date From",
     "Date To",
     "Total Rendered Hours",
+    "Completed Operational Days Count",
     "Completed Logs Count",
     "In-Progress/Open Logs Count",
     "Status/Notes",
@@ -516,6 +593,7 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
     range.from,
     range.to,
     formatDecimalHours(group.totalRenderedMinutes),
+    String(group.completedOperationalDaysCount),
     String(group.completedLogsCount),
     String(group.openLogsCount),
     getGroupStatusNote(group),
