@@ -6,6 +6,7 @@ import {
   MAX_CREDITED_SHIFT_MINUTES,
 } from "@/lib/clock/duration";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
+import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 import type { ClockSessionStatus } from "@/types/clock";
 
@@ -54,6 +55,24 @@ type WorkScheduleRow = {
   shift_end: string;
 };
 
+type LeaveRequestRow = {
+  employee_id: string;
+  leave_type_id: string;
+  start_date: string;
+  end_date: string;
+};
+
+type LeaveTypeRow = {
+  id: string;
+  name: string;
+};
+
+type DayOffRosterRow = {
+  employeeid: string;
+  month: string;
+  dayoff: string;
+};
+
 type PayrollLog = {
   id: string;
   workdate: string;
@@ -67,12 +86,29 @@ type PayrollLog = {
   isCompleted: boolean;
 };
 
+type PayrollDay = {
+  workdate: string;
+  logs: PayrollLog[];
+  sessionIds: string[];
+  statuses: ClockSessionStatus[];
+  renderedBeforeCapMinutes: number;
+  payrollMinutes: number;
+  dailyCapMinutes: number;
+  leaveLabel: string;
+  dayOffLabel: string;
+  completedLogsCount: number;
+  openLogsCount: number;
+  missingClockOutCount: number;
+  duplicateCompletedLogsCount: number;
+};
+
 type PayrollCrewGroup = {
   employeeId: string;
   employeeName: string;
   employeeEmail: string;
   departmentName: string;
   logs: PayrollLog[];
+  days: PayrollDay[];
   totalRenderedMinutes: number;
   totalBreakMinutes: number;
   totalGrossMinutes: number;
@@ -81,6 +117,8 @@ type PayrollCrewGroup = {
   openLogsCount: number;
   missingClockOutCount: number;
   duplicateCompletedLogsCount: number;
+  restDayCompletedLogsCount: number;
+  leaveDayCompletedLogsCount: number;
 };
 
 type NormalizedSearchParams = Required<Pick<PayrollReportSearchParams, "from" | "to">>;
@@ -100,6 +138,9 @@ export async function PayrollReportPage({
     { data: departmentData },
     { data: scheduleAssignmentData },
     { data: scheduleData },
+    { data: leaveData },
+    { data: leaveTypeData },
+    { data: dayOffData },
   ] = await Promise.all([
     supabase
       .from("clock_sessions")
@@ -119,6 +160,17 @@ export async function PayrollReportPage({
       .select("employee_id,schedule_id,effective_from,effective_to,is_primary")
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
+    supabase
+      .from("leave_requests")
+      .select("employee_id,leave_type_id,start_date,end_date")
+      .eq("status", "approved")
+      .order("start_date", { ascending: false })
+      .limit(1000),
+    supabase.from("leave_types").select("id,name"),
+    supabase
+      .from("monthly_day_off_rosters")
+      .select("employeeid,month,dayoff")
+      .limit(1000),
   ]);
 
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
@@ -137,6 +189,14 @@ export async function PayrollReportPage({
       schedule,
     ]),
   );
+  const leaveTypes = (leaveTypeData ?? []) as LeaveTypeRow[];
+  const leaveTypeMap = new Map(leaveTypes.map((leaveType) => [leaveType.id, leaveType.name]));
+  const approvedLeaves = ((leaveData ?? []) as LeaveRequestRow[]).filter((request) =>
+    employeeIds.has(request.employee_id),
+  );
+  const dayOffRosters = ((dayOffData ?? []) as DayOffRosterRow[]).filter((row) =>
+    employeeIds.has(row.employeeid),
+  );
   const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
     employeeIds.has(session.employeeid),
   );
@@ -146,6 +206,9 @@ export async function PayrollReportPage({
     departmentMap,
     scheduleAssignments,
     scheduleMap,
+    approvedLeaves,
+    leaveTypeMap,
+    dayOffRosters,
   }).filter((group) => group.logs.length > 0);
   const csvHref = buildCsvHref(groups, range);
   const totalRenderedMinutes = groups.reduce(
@@ -347,9 +410,55 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
         </span>
       </summary>
       <div className="max-w-full overflow-x-auto">
-        <table className="min-w-[960px] border-separate border-spacing-0 text-left text-sm">
+        <table className="min-w-[1100px] border-separate border-spacing-0 text-left text-sm">
           <thead className="bg-[#001f4d] text-xs uppercase text-white">
             <tr>
+              <th className="px-5 py-3">Work date</th>
+              <th className="px-5 py-3">Session IDs</th>
+              <th className="px-5 py-3">Statuses</th>
+              <th className="px-5 py-3">Pre-cap rendered</th>
+              <th className="px-5 py-3">Payroll hours</th>
+              <th className="px-5 py-3">PTO/Leave</th>
+              <th className="px-5 py-3">Day Off</th>
+              <th className="px-5 py-3">Daily notes</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100">
+            {group.days.map((day) => (
+              <tr key={day.workdate} className="align-top hover:bg-[#fffdf2]">
+                <td className="px-5 py-4 font-semibold text-zinc-700">
+                  {day.workdate}
+                </td>
+                <td className="max-w-56 px-5 py-4 text-xs text-zinc-500">
+                  {day.sessionIds.join(", ")}
+                </td>
+                <td className="px-5 py-4 text-zinc-600">
+                  {day.statuses.map(formatStatus).join(", ")}
+                </td>
+                <td className="px-5 py-4 text-zinc-600">
+                  {formatHours(day.renderedBeforeCapMinutes)}
+                </td>
+                <td className="px-5 py-4 font-black text-[#001f4d]">
+                  {formatHours(day.payrollMinutes)}
+                </td>
+                <td className="px-5 py-4 text-zinc-600">{day.leaveLabel}</td>
+                <td className="px-5 py-4 text-zinc-600">{day.dayOffLabel}</td>
+                <td className="px-5 py-4 text-zinc-600">
+                  {getDayStatusNote(day)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="border-t border-[#efe6b6] px-5 py-4">
+        <h3 className="text-sm font-black text-[#001f4d]">Clock session details</h3>
+      </div>
+      <div className="max-w-full overflow-x-auto">
+        <table className="min-w-[980px] border-separate border-spacing-0 text-left text-sm">
+          <thead className="bg-[#001f4d] text-xs uppercase text-white">
+            <tr>
+              <th className="px-5 py-3">Session ID</th>
               <th className="px-5 py-3">Work date</th>
               <th className="px-5 py-3">Clock in</th>
               <th className="px-5 py-3">Clock out</th>
@@ -361,6 +470,9 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
           <tbody className="divide-y divide-zinc-100">
             {group.logs.map((log) => (
               <tr key={log.id} className="align-top hover:bg-[#fffdf2]">
+                <td className="max-w-48 px-5 py-4 text-xs text-zinc-500">
+                  {log.id}
+                </td>
                 <td className="px-5 py-4 text-zinc-600">{log.workdate}</td>
                 <td className="px-5 py-4 text-zinc-600">
                   {formatDateTime(log.clockinat)}
@@ -395,12 +507,18 @@ function groupPayrollLogs({
   departmentMap,
   scheduleAssignments,
   scheduleMap,
+  approvedLeaves,
+  leaveTypeMap,
+  dayOffRosters,
 }: {
   sessions: ClockSessionRow[];
   employeeMap: Map<string, EmployeeRow>;
   departmentMap: Map<string, string>;
   scheduleAssignments: ScheduleAssignmentRow[];
   scheduleMap: Map<string, WorkScheduleRow>;
+  approvedLeaves: LeaveRequestRow[];
+  leaveTypeMap: Map<string, string>;
+  dayOffRosters: DayOffRosterRow[];
 }) {
   const groups = new Map<string, PayrollCrewGroup>();
 
@@ -421,6 +539,7 @@ function groupPayrollLogs({
       employeeEmail: employee.work_email,
       departmentName,
       logs: [],
+      days: [],
       totalRenderedMinutes: 0,
       totalBreakMinutes: 0,
       totalGrossMinutes: 0,
@@ -429,6 +548,8 @@ function groupPayrollLogs({
       openLogsCount: 0,
       missingClockOutCount: 0,
       duplicateCompletedLogsCount: 0,
+      restDayCompletedLogsCount: 0,
+      leaveDayCompletedLogsCount: 0,
     };
     const log = {
       id: session.id,
@@ -455,7 +576,7 @@ function groupPayrollLogs({
   }
 
   for (const group of groups.values()) {
-    applyDailyPayrollTotals(group);
+    applyDailyPayrollTotals(group, approvedLeaves, leaveTypeMap, dayOffRosters);
   }
 
   return Array.from(groups.values()).sort((first, second) =>
@@ -463,7 +584,12 @@ function groupPayrollLogs({
   );
 }
 
-function applyDailyPayrollTotals(group: PayrollCrewGroup) {
+function applyDailyPayrollTotals(
+  group: PayrollCrewGroup,
+  approvedLeaves: LeaveRequestRow[],
+  leaveTypeMap: Map<string, string>,
+  dayOffRosters: DayOffRosterRow[],
+) {
   const dailyBuckets = new Map<
     string,
     {
@@ -472,42 +598,100 @@ function applyDailyPayrollTotals(group: PayrollCrewGroup) {
       renderedMinutes: number;
       dailyCapMinutes: number;
       logsCount: number;
+      completedLogsCount: number;
+      openLogsCount: number;
+      missingClockOutCount: number;
+      logs: PayrollLog[];
     }
   >();
 
   for (const log of group.logs) {
-    if (!log.isCompleted) continue;
-
     const existing = dailyBuckets.get(log.workdate) ?? {
       grossMinutes: 0,
       breakMinutes: 0,
       renderedMinutes: 0,
       dailyCapMinutes: 0,
       logsCount: 0,
+      completedLogsCount: 0,
+      openLogsCount: 0,
+      missingClockOutCount: 0,
+      logs: [],
     };
 
-    existing.grossMinutes += log.grossMinutes;
-    existing.breakMinutes += log.breakMinutes;
-    existing.renderedMinutes += log.renderedMinutes;
+    existing.logs.push(log);
     existing.dailyCapMinutes = Math.max(existing.dailyCapMinutes, log.dailyCapMinutes);
     existing.logsCount += 1;
+    if (log.isCompleted) {
+      existing.grossMinutes += log.grossMinutes;
+      existing.breakMinutes += log.breakMinutes;
+      existing.renderedMinutes += log.renderedMinutes;
+      existing.completedLogsCount += 1;
+    } else if (log.status === "active" || log.status === "on_break") {
+      existing.openLogsCount += 1;
+    } else if (!log.clockoutat) {
+      existing.missingClockOutCount += 1;
+    }
     dailyBuckets.set(log.workdate, existing);
   }
 
   group.totalRenderedMinutes = 0;
   group.totalBreakMinutes = 0;
   group.totalGrossMinutes = 0;
-  group.completedOperationalDaysCount = dailyBuckets.size;
+  group.days = [];
+  group.completedOperationalDaysCount = 0;
   group.duplicateCompletedLogsCount = 0;
+  group.restDayCompletedLogsCount = 0;
+  group.leaveDayCompletedLogsCount = 0;
 
-  for (const bucket of dailyBuckets.values()) {
-    group.totalRenderedMinutes += Math.min(
+  for (const [workdate, bucket] of [...dailyBuckets.entries()].sort(([first], [second]) =>
+    first.localeCompare(second),
+  )) {
+    const payrollMinutes = Math.min(
       bucket.renderedMinutes,
       bucket.dailyCapMinutes || MAX_CREDITED_SHIFT_MINUTES,
     );
-    group.totalBreakMinutes += bucket.breakMinutes;
-    group.totalGrossMinutes += bucket.grossMinutes;
-    group.duplicateCompletedLogsCount += Math.max(0, bucket.logsCount - 1);
+    const leaveLabel = getLeaveLabel(
+      group.employeeId,
+      workdate,
+      approvedLeaves,
+      leaveTypeMap,
+    );
+    const dayOffLabel = getMonthlyRosterDayOffLabel(
+      group.employeeId,
+      workdate,
+      dayOffRosters,
+    );
+    const duplicateCompletedLogsCount = Math.max(0, bucket.completedLogsCount - 1);
+
+    if (bucket.completedLogsCount > 0) {
+      group.totalRenderedMinutes += payrollMinutes;
+      group.totalBreakMinutes += bucket.breakMinutes;
+      group.totalGrossMinutes += bucket.grossMinutes;
+      group.completedOperationalDaysCount += 1;
+      if (dayOffLabel !== "None") {
+        group.restDayCompletedLogsCount += bucket.completedLogsCount;
+      }
+      if (leaveLabel !== "None") {
+        group.leaveDayCompletedLogsCount += bucket.completedLogsCount;
+      }
+    }
+    group.duplicateCompletedLogsCount += duplicateCompletedLogsCount;
+
+    group.days.push({
+      workdate,
+      logs: bucket.logs,
+      sessionIds: bucket.logs.map((log) => log.id),
+      statuses: [...new Set(bucket.logs.map((log) => log.status))],
+      renderedBeforeCapMinutes: bucket.renderedMinutes,
+      payrollMinutes,
+      dailyCapMinutes: bucket.dailyCapMinutes || MAX_CREDITED_SHIFT_MINUTES,
+      leaveLabel,
+      dayOffLabel,
+      completedLogsCount: bucket.completedLogsCount,
+      openLogsCount: bucket.openLogsCount,
+      missingClockOutCount: bucket.missingClockOutCount,
+      duplicateCompletedLogsCount,
+    });
   }
 }
 
@@ -568,9 +752,84 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
       } capped by operational day`,
     );
   }
+  if (group.restDayCompletedLogsCount > 0) {
+    notes.push(
+      `${group.restDayCompletedLogsCount} completed rest-day log${
+        group.restDayCompletedLogsCount === 1 ? "" : "s"
+      } included`,
+    );
+  }
+  if (group.leaveDayCompletedLogsCount > 0) {
+    notes.push(
+      `${group.leaveDayCompletedLogsCount} completed PTO/leave log${
+        group.leaveDayCompletedLogsCount === 1 ? "" : "s"
+      } included`,
+    );
+  }
   if (group.completedLogsCount === 0) notes.push("No completed payroll logs");
 
   return notes.length > 0 ? notes.join("; ") : "Ready for hours review";
+}
+
+function getDayStatusNote(day: PayrollDay) {
+  const notes: string[] = [];
+
+  if (day.completedLogsCount > 0) {
+    notes.push(
+      `${day.completedLogsCount} completed log${
+        day.completedLogsCount === 1 ? "" : "s"
+      } included`,
+    );
+  }
+  if (day.openLogsCount > 0) {
+    notes.push(
+      `${day.openLogsCount} open log${
+        day.openLogsCount === 1 ? "" : "s"
+      } excluded`,
+    );
+  }
+  if (day.missingClockOutCount > 0) {
+    notes.push(
+      `${day.missingClockOutCount} missing clock-out log${
+        day.missingClockOutCount === 1 ? "" : "s"
+      } excluded`,
+    );
+  }
+  if (day.duplicateCompletedLogsCount > 0) {
+    notes.push(
+      `${day.duplicateCompletedLogsCount} duplicate completed log${
+        day.duplicateCompletedLogsCount === 1 ? "" : "s"
+      } capped`,
+    );
+  }
+  if (day.dayOffLabel !== "None" && day.completedLogsCount > 0) {
+    notes.push("Completed work on rostered rest day");
+  }
+  if (day.leaveLabel !== "None" && day.completedLogsCount > 0) {
+    notes.push("Completed work on approved PTO/leave date");
+  }
+
+  return notes.length > 0 ? notes.join("; ") : "No payroll issues";
+}
+
+function getLeaveLabel(
+  employeeId: string,
+  date: string,
+  approvedLeaves: LeaveRequestRow[],
+  leaveTypeMap: Map<string, string>,
+) {
+  const matches = approvedLeaves.filter(
+    (leave) =>
+      leave.employee_id === employeeId &&
+      leave.start_date <= date &&
+      leave.end_date >= date,
+  );
+
+  if (matches.length === 0) return "None";
+
+  return matches
+    .map((leave) => leaveTypeMap.get(leave.leave_type_id) ?? "Approved Leave")
+    .join(", ");
 }
 
 function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams) {
