@@ -284,7 +284,7 @@ export async function PayrollReportPage({
         <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
           <div className="border-b border-[#efe6b6] px-5 py-4">
             <h2 className="text-base font-black text-[#001f4d]">
-              Crew rendered hours
+              Payroll hours by crew
             </h2>
           </div>
           <div className="max-w-full overflow-x-auto">
@@ -294,7 +294,7 @@ export async function PayrollReportPage({
                   <th className="w-72 px-5 py-3">Crew Member</th>
                   <th className="w-56 px-5 py-3">Department</th>
                   <th className="w-40 px-5 py-3">Total payroll hours</th>
-                  <th className="w-36 px-5 py-3">Payable days/logs</th>
+                  <th className="w-44 px-5 py-3">Payroll basis / audit</th>
                   <th className="w-56 px-5 py-3">Status/Notes</th>
                 </tr>
               </thead>
@@ -315,7 +315,7 @@ export async function PayrollReportPage({
                       {group.expectedPayableDaysCount} expected day
                       {group.expectedPayableDaysCount === 1 ? "" : "s"}
                       <span className="mt-1 block text-xs text-zinc-500">
-                        {group.completedLogsCount} completed log
+                        {group.completedLogsCount} completed clock record
                         {group.completedLogsCount === 1 ? "" : "s"}
                       </span>
                       {group.openLogsCount > 0 ? (
@@ -428,7 +428,7 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
             {group.expectedPayableDaysCount} expected payable day
             {group.expectedPayableDaysCount === 1 ? "" : "s"} ·{" "}
             {formatDecimalHours(getGroupScheduledNetMinutes(group))} scheduled net/day ·{" "}
-            {group.completedLogsCount} completed log
+            {group.completedLogsCount} completed clock record
             {group.completedLogsCount === 1 ? "" : "s"}
             {group.openLogsCount > 0
               ? ` · ${group.openLogsCount} open excluded`
@@ -489,13 +489,15 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
         </table>
       </div>
       <div className="border-t border-[#efe6b6] px-5 py-4">
-        <h3 className="text-sm font-black text-[#001f4d]">Clock session details</h3>
+        <h3 className="text-sm font-black text-[#001f4d]">
+          Clock records / audit logs
+        </h3>
       </div>
       <div className="max-w-full overflow-x-auto">
         <table className="min-w-[980px] border-separate border-spacing-0 text-left text-sm">
           <thead className="bg-[#001f4d] text-xs uppercase text-white">
             <tr>
-              <th className="px-5 py-3">Session ID</th>
+              <th className="px-5 py-3">Record ID</th>
               <th className="px-5 py-3">Work date</th>
               <th className="px-5 py-3">Clock in</th>
               <th className="px-5 py-3">Clock out</th>
@@ -911,35 +913,35 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
 
   if (group.openLogsCount > 0) {
     notes.push(
-      `${group.openLogsCount} in-progress/open log${
+      `${group.openLogsCount} in-progress/open clock record${
         group.openLogsCount === 1 ? "" : "s"
       } excluded`,
     );
   }
   if (group.missingClockOutCount > 0) {
     notes.push(
-      `${group.missingClockOutCount} missing clock-out log${
+      `${group.missingClockOutCount} missing clock-out clock record${
         group.missingClockOutCount === 1 ? "" : "s"
       } excluded`,
     );
   }
   if (group.duplicateCompletedLogsCount > 0) {
     notes.push(
-      `${group.duplicateCompletedLogsCount} duplicate/same-day completed log${
+      `${group.duplicateCompletedLogsCount} duplicate/same-day clock record${
         group.duplicateCompletedLogsCount === 1 ? "" : "s"
       } capped by operational day`,
     );
   }
   if (group.restDayCompletedLogsCount > 0) {
     notes.push(
-      `${group.restDayCompletedLogsCount} completed rest-day log${
+      `${group.restDayCompletedLogsCount} completed rest-day clock record${
         group.restDayCompletedLogsCount === 1 ? "" : "s"
       } excluded from regular payroll`,
     );
   }
   if (group.leaveDayCompletedLogsCount > 0) {
     notes.push(
-      `${group.leaveDayCompletedLogsCount} completed PTO/leave log${
+      `${group.leaveDayCompletedLogsCount} completed PTO/leave clock record${
         group.leaveDayCompletedLogsCount === 1 ? "" : "s"
       } excluded from regular payroll`,
     );
@@ -952,7 +954,7 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
   if (group.noScheduleDatesCount > 0) {
     notes.push("No schedule configured for one or more dates");
   }
-  if (group.completedLogsCount === 0) notes.push("No completed payroll logs");
+  if (group.completedLogsCount === 0) notes.push("No completed clock records");
 
   return notes.length > 0 ? notes.join("; ") : "Ready for hours review";
 }
@@ -1055,28 +1057,28 @@ function getDayStatusNote(day: PayrollDay) {
 
   if (day.completedLogsCount > 0) {
     notes.push(
-      `${day.completedLogsCount} completed log${
+      `${day.completedLogsCount} completed clock record${
         day.completedLogsCount === 1 ? "" : "s"
       } ${day.isExpectedPayable ? "included" : "excluded from regular payroll"}`,
     );
   }
   if (day.openLogsCount > 0) {
     notes.push(
-      `${day.openLogsCount} open log${
+      `${day.openLogsCount} open clock record${
         day.openLogsCount === 1 ? "" : "s"
       } excluded`,
     );
   }
   if (day.missingClockOutCount > 0) {
     notes.push(
-      `${day.missingClockOutCount} missing clock-out log${
+      `${day.missingClockOutCount} missing clock-out clock record${
         day.missingClockOutCount === 1 ? "" : "s"
       } excluded`,
     );
   }
   if (day.duplicateCompletedLogsCount > 0) {
     notes.push(
-      `${day.duplicateCompletedLogsCount} duplicate completed log${
+      `${day.duplicateCompletedLogsCount} duplicate clock record${
         day.duplicateCompletedLogsCount === 1 ? "" : "s"
       } capped`,
     );
@@ -1094,7 +1096,7 @@ function getDayStatusNote(day: PayrollDay) {
     notes.push("No schedule configured");
   }
   if (day.isExpectedPayable && day.completedLogsCount === 0) {
-    notes.push("Expected payable day; missing completed clock log");
+    notes.push("Expected payable day; missing completed clock record");
   }
 
   return notes.length > 0 ? notes.join("; ") : "No payroll issues";
@@ -1130,10 +1132,10 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
     "Expected Payable Days",
     "Scheduled Net Hours per Day",
     "Total Payroll Hours",
-    "Completed Logs Count",
-    "In-Progress/Open Logs Count",
-    "Excluded Rest-Day Logs Count",
-    "Clock Log Notes / Exceptions",
+    "Completed Clock Records Count",
+    "In-Progress/Open Clock Records Count",
+    "Excluded Rest-Day Clock Records Count",
+    "Clock Record Notes / Exceptions",
   ];
   const rows = groups.map((group) => [
     group.employeeName,
