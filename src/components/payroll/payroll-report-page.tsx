@@ -228,12 +228,12 @@ export async function PayrollReportPage({
     dayOffRosters,
   });
   const csvHref = buildCsvHref(groups, range);
-  const totalRenderedMinutes = groups.reduce(
+  const totalPayrollMinutes = groups.reduce(
     (total, group) => total + group.totalRenderedMinutes,
     0,
   );
-  const totalLogs = groups.reduce(
-    (total, group) => total + group.completedLogsCount,
+  const totalPayableDays = groups.reduce(
+    (total, group) => total + group.expectedPayableDaysCount,
     0,
   );
   const crewWithHours = groups.filter((group) => group.totalRenderedMinutes > 0).length;
@@ -271,8 +271,8 @@ export async function PayrollReportPage({
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Pay period" value={`${range.from} to ${range.to}`} />
         <SummaryCard label="Crew with hours" value={String(crewWithHours)} />
-        <SummaryCard label="Rendered hours" value={formatHours(totalRenderedMinutes)} />
-        <SummaryCard label="Completed logs" value={String(totalLogs)} />
+        <SummaryCard label="Payroll hours" value={formatHours(totalPayrollMinutes)} />
+        <SummaryCard label="Payable days" value={String(totalPayableDays)} />
       </section>
 
       {groups.length === 0 ? (
@@ -292,7 +292,7 @@ export async function PayrollReportPage({
                 <tr>
                   <th className="w-72 px-5 py-3">Crew Member</th>
                   <th className="w-56 px-5 py-3">Department</th>
-                  <th className="w-40 px-5 py-3">Total rendered hours</th>
+                  <th className="w-40 px-5 py-3">Total payroll hours</th>
                   <th className="w-36 px-5 py-3">Payable days/logs</th>
                   <th className="w-56 px-5 py-3">Status/Notes</th>
                 </tr>
@@ -311,9 +311,8 @@ export async function PayrollReportPage({
                       {formatHours(group.totalRenderedMinutes)}
                     </td>
                     <td className="px-5 py-4 text-zinc-600">
-                      {group.completedOperationalDaysCount} day
-                      {group.completedOperationalDaysCount === 1 ? "" : "s"} /{" "}
-                      {group.expectedPayableDaysCount} expected
+                      {group.expectedPayableDaysCount} expected day
+                      {group.expectedPayableDaysCount === 1 ? "" : "s"}
                       <span className="mt-1 block text-xs text-zinc-500">
                         {group.completedLogsCount} completed log
                         {group.completedLogsCount === 1 ? "" : "s"}
@@ -413,10 +412,9 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
           <h2 className="text-base font-black text-[#001f4d]">{group.employeeName}</h2>
           <p className="mt-1 text-xs text-zinc-500">
             {group.departmentName} · {formatHours(group.totalRenderedMinutes)} ·{" "}
-            {group.completedOperationalDaysCount} completed day
-            {group.completedOperationalDaysCount === 1 ? "" : "s"} /{" "}
             {group.expectedPayableDaysCount} expected payable day
             {group.expectedPayableDaysCount === 1 ? "" : "s"} ·{" "}
+            {getScheduledNetHoursLabel(group)} scheduled net/day ·{" "}
             {group.completedLogsCount} completed log
             {group.completedLogsCount === 1 ? "" : "s"}
             {group.openLogsCount > 0
@@ -438,7 +436,7 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
               <th className="px-5 py-3">Work date</th>
               <th className="px-5 py-3">Session IDs</th>
               <th className="px-5 py-3">Statuses</th>
-              <th className="px-5 py-3">Pre-cap rendered</th>
+              <th className="px-5 py-3">Clock rendered audit</th>
               <th className="px-5 py-3">Payroll hours</th>
               <th className="px-5 py-3">Expected</th>
               <th className="px-5 py-3">PTO/Leave</th>
@@ -759,17 +757,13 @@ function applyDailyPayrollTotals({
     const hasSchedule = Boolean(schedule);
     const isExpectedPayable =
       hasSchedule && hasRoster && dayOffLabel === "None" && leaveLabel === "None";
-    const payrollMinutes =
-      bucket.completedLogsCount > 0 && isExpectedPayable
-        ? Math.min(
-            bucket.renderedMinutes,
-            bucket.dailyCapMinutes || MAX_CREDITED_SHIFT_MINUTES,
-          )
-        : 0;
+    const scheduledNetMinutes = bucket.dailyCapMinutes || MAX_CREDITED_SHIFT_MINUTES;
+    const payrollMinutes = isExpectedPayable ? scheduledNetMinutes : 0;
     const duplicateCompletedLogsCount = Math.max(0, bucket.completedLogsCount - 1);
 
     if (isExpectedPayable) {
       group.expectedPayableDaysCount += 1;
+      group.totalRenderedMinutes += payrollMinutes;
     }
     if (!hasSchedule) {
       group.noScheduleDatesCount += 1;
@@ -779,7 +773,6 @@ function applyDailyPayrollTotals({
     }
 
     if (bucket.completedLogsCount > 0 && isExpectedPayable) {
-      group.totalRenderedMinutes += payrollMinutes;
       group.totalBreakMinutes += bucket.breakMinutes;
       group.totalGrossMinutes += bucket.grossMinutes;
       group.completedOperationalDaysCount += 1;
@@ -916,6 +909,21 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
   return notes.length > 0 ? notes.join("; ") : "Ready for hours review";
 }
 
+function getScheduledNetHoursLabel(group: PayrollCrewGroup) {
+  const scheduledMinutes = [
+    ...new Set(
+      group.days
+        .filter((day) => day.isExpectedPayable)
+        .map((day) => day.dailyCapMinutes),
+    ),
+  ];
+
+  if (scheduledMinutes.length === 0) return "0.00";
+  if (scheduledMinutes.length === 1) return formatDecimalHours(scheduledMinutes[0]);
+
+  return "Mixed";
+}
+
 function getOperationalDatesInRange(range: NormalizedSearchParams) {
   const dates: string[] = [];
   let current = range.from;
@@ -1047,7 +1055,7 @@ function getDayStatusNote(day: PayrollDay) {
     notes.push("No schedule configured");
   }
   if (day.isExpectedPayable && day.completedLogsCount === 0) {
-    notes.push("Expected payable day with no completed log");
+    notes.push("Expected payable day; missing completed clock log");
   }
 
   return notes.length > 0 ? notes.join("; ") : "No payroll issues";
@@ -1080,13 +1088,13 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
     "Department",
     "Date From",
     "Date To",
-    "Total Rendered Hours",
-    "Expected Payable Days Count",
-    "Completed Operational Days Count",
+    "Expected Payable Days",
+    "Scheduled Net Hours per Day",
+    "Total Payroll Hours",
     "Completed Logs Count",
     "In-Progress/Open Logs Count",
     "Excluded Rest-Day Logs Count",
-    "Status/Notes",
+    "Clock Log Notes / Exceptions",
   ];
   const rows = groups.map((group) => [
     group.employeeName,
@@ -1094,9 +1102,9 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
     group.departmentName,
     range.from,
     range.to,
-    formatDecimalHours(group.totalRenderedMinutes),
     String(group.expectedPayableDaysCount),
-    String(group.completedOperationalDaysCount),
+    getScheduledNetHoursLabel(group),
+    formatDecimalHours(group.totalRenderedMinutes),
     String(group.completedLogsCount),
     String(group.openLogsCount),
     String(group.restDayCompletedLogsCount),
