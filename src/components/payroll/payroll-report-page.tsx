@@ -6,10 +6,6 @@ import {
   MAX_CREDITED_SHIFT_MINUTES,
 } from "@/lib/clock/duration";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
-import {
-  getMonthlyRosterDayOffLabel,
-  hasExplicitMonthlyDayOffRoster,
-} from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 import type { ClockSessionStatus } from "@/types/clock";
 
@@ -131,6 +127,16 @@ type PayrollCrewGroup = {
 };
 
 type NormalizedSearchParams = Required<Pick<PayrollReportSearchParams, "from" | "to">>;
+
+const WEEKDAYS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
 
 export async function PayrollReportPage({
   searchParams,
@@ -740,19 +746,19 @@ function applyDailyPayrollTotals({
       approvedLeaves,
       leaveTypeMap,
     );
-    const dayOffLabel = getMonthlyRosterDayOffLabel(
+    const dayOffLabel = getPayrollRosterDayOffLabel(
       group.employeeId,
       workdate,
       dayOffRosters,
     );
-    const hasRoster = hasExplicitMonthlyDayOffRoster(
+    const hasRoster = hasPayrollMonthRoster(
       group.employeeId,
       workdate,
       dayOffRosters,
     );
     const hasSchedule = Boolean(schedule);
     const isExpectedPayable =
-      hasSchedule && dayOffLabel === "None" && leaveLabel === "None";
+      hasSchedule && hasRoster && dayOffLabel === "None" && leaveLabel === "None";
     const payrollMinutes =
       bucket.completedLogsCount > 0 && isExpectedPayable
         ? Math.min(
@@ -898,7 +904,9 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
     );
   }
   if (group.noRosterDatesCount > 0) {
-    notes.push("No roster set for one or more dates; payroll may be inaccurate");
+    notes.push(
+      "No roster set for payroll month on one or more dates; payroll may be inaccurate",
+    );
   }
   if (group.noScheduleDatesCount > 0) {
     notes.push("No schedule configured for one or more dates");
@@ -925,6 +933,74 @@ function addDays(date: string, days: number) {
   value.setUTCDate(value.getUTCDate() + days);
 
   return getManilaDateString(value);
+}
+
+function getPayrollRosterDayOffLabel(
+  employeeId: string,
+  workdate: string,
+  dayOffRosters: DayOffRosterRow[],
+) {
+  const assignedDayOff = getPayrollRosterAssignedDayOff(
+    employeeId,
+    workdate,
+    dayOffRosters,
+  );
+
+  if (!assignedDayOff) return "None";
+
+  return assignedDayOff === getManilaWeekday(workdate) ? assignedDayOff : "None";
+}
+
+function hasPayrollMonthRoster(
+  employeeId: string,
+  workdate: string,
+  dayOffRosters: DayOffRosterRow[],
+) {
+  const payrollRosterMonth = getPayrollRosterMonthForWorkdate(workdate);
+
+  return dayOffRosters.some(
+    (candidate) =>
+      candidate.employeeid === employeeId &&
+      normalizeRosterMonth(candidate.month) === payrollRosterMonth,
+  );
+}
+
+function getPayrollRosterAssignedDayOff(
+  employeeId: string,
+  workdate: string,
+  dayOffRosters: DayOffRosterRow[],
+) {
+  const payrollRosterMonth = getPayrollRosterMonthForWorkdate(workdate);
+  const roster = dayOffRosters.find(
+    (candidate) =>
+      candidate.employeeid === employeeId &&
+      normalizeRosterMonth(candidate.month) === payrollRosterMonth,
+  );
+
+  return normalizeDayOff(roster?.dayoff);
+}
+
+function getPayrollRosterMonthForWorkdate(workdate: string) {
+  return `${workdate.slice(0, 8)}01`;
+}
+
+function normalizeRosterMonth(month: string) {
+  return month.slice(0, 10);
+}
+
+function normalizeDayOff(dayOff: string | null | undefined) {
+  if (!dayOff) return null;
+
+  const normalized = dayOff.trim().toLowerCase();
+
+  return WEEKDAYS.find((weekday) => weekday.toLowerCase() === normalized) ?? null;
+}
+
+function getManilaWeekday(workdate: string) {
+  return new Date(`${workdate}T00:00:00+08:00`).toLocaleDateString("en-US", {
+    timeZone: "Asia/Manila",
+    weekday: "long",
+  });
 }
 
 function getDayStatusNote(day: PayrollDay) {
@@ -965,7 +1041,7 @@ function getDayStatusNote(day: PayrollDay) {
     notes.push("Completed work on approved PTO/leave date");
   }
   if (!day.hasRoster) {
-    notes.push("No roster set");
+    notes.push("No roster set for payroll month");
   }
   if (!day.hasSchedule) {
     notes.push("No schedule configured");
