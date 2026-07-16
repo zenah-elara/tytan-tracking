@@ -12,6 +12,7 @@ import type { ClockSessionStatus } from "@/types/clock";
 export type PayrollReportSearchParams = {
   from?: string;
   to?: string;
+  expectedDays?: string;
 };
 
 type EmployeeRow = {
@@ -126,7 +127,11 @@ type PayrollCrewGroup = {
   noScheduleDatesCount: number;
 };
 
-type NormalizedSearchParams = Required<Pick<PayrollReportSearchParams, "from" | "to">>;
+type NormalizedSearchParams = {
+  from: string;
+  to: string;
+  expectedDays: number;
+};
 
 const WEEKDAYS = [
   "Sunday",
@@ -232,10 +237,6 @@ export async function PayrollReportPage({
     (total, group) => total + group.totalRenderedMinutes,
     0,
   );
-  const totalPayableDays = groups.reduce(
-    (total, group) => total + group.expectedPayableDaysCount,
-    0,
-  );
   const crewWithHours = groups.filter((group) => group.totalRenderedMinutes > 0).length;
 
   return (
@@ -270,9 +271,9 @@ export async function PayrollReportPage({
 
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Pay period" value={`${range.from} to ${range.to}`} />
+        <SummaryCard label="Expected payable days" value={String(range.expectedDays)} />
         <SummaryCard label="Crew with hours" value={String(crewWithHours)} />
         <SummaryCard label="Payroll hours" value={formatHours(totalPayrollMinutes)} />
-        <SummaryCard label="Payable days" value={String(totalPayableDays)} />
       </section>
 
       {groups.length === 0 ? (
@@ -351,7 +352,7 @@ function PayrollFilters({ range }: { range: NormalizedSearchParams }) {
 
   return (
     <section className="rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
-      <form className="grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+      <form className="grid gap-4 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
         <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
           Start date
           <input
@@ -370,13 +371,25 @@ function PayrollFilters({ range }: { range: NormalizedSearchParams }) {
             className={fieldClassName}
           />
         </label>
+        <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+          Expected payable days
+          <input
+            name="expectedDays"
+            type="number"
+            min="0"
+            max="31"
+            step="1"
+            defaultValue={range.expectedDays}
+            className={fieldClassName}
+          />
+        </label>
         <button className="h-11 rounded-lg bg-[#001f4d] px-4 text-sm font-bold text-white transition hover:bg-[#07336f]">
           Apply filter
         </button>
       </form>
       <div className="mt-4 flex flex-wrap gap-2">
-        <PresetLink label="1st-15th" range={firstHalf} />
-        <PresetLink label="16th-end of month" range={secondHalf} />
+        <PresetLink label="2nd-16th" range={firstHalf} />
+        <PresetLink label="16th-2nd" range={secondHalf} />
       </div>
     </section>
   );
@@ -385,7 +398,7 @@ function PayrollFilters({ range }: { range: NormalizedSearchParams }) {
 function PresetLink({ label, range }: { label: string; range: NormalizedSearchParams }) {
   return (
     <a
-      href={`?from=${range.from}&to=${range.to}`}
+      href={`?from=${range.from}&to=${range.to}&expectedDays=${range.expectedDays}`}
       className="inline-flex h-9 items-center rounded-lg border border-[#efe6b6] bg-[#fffdf2] px-3 text-xs font-black text-[#001f4d] transition hover:border-[#f2d300] hover:bg-[#fff7bf]"
     >
       {label}
@@ -414,7 +427,7 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
             {group.departmentName} · {formatHours(group.totalRenderedMinutes)} ·{" "}
             {group.expectedPayableDaysCount} expected payable day
             {group.expectedPayableDaysCount === 1 ? "" : "s"} ·{" "}
-            {getScheduledNetHoursLabel(group)} scheduled net/day ·{" "}
+            {formatDecimalHours(getGroupScheduledNetMinutes(group))} scheduled net/day ·{" "}
             {group.completedLogsCount} completed log
             {group.completedLogsCount === 1 ? "" : "s"}
             {group.openLogsCount > 0
@@ -437,7 +450,7 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
               <th className="px-5 py-3">Session IDs</th>
               <th className="px-5 py-3">Statuses</th>
               <th className="px-5 py-3">Clock rendered audit</th>
-              <th className="px-5 py-3">Payroll hours</th>
+              <th className="px-5 py-3">Scheduled audit hours</th>
               <th className="px-5 py-3">Expected</th>
               <th className="px-5 py-3">PTO/Leave</th>
               <th className="px-5 py-3">Day Off</th>
@@ -591,6 +604,7 @@ function groupPayrollLogs({
     applyDailyPayrollTotals({
       group,
       range,
+      expectedPayableDays: range.expectedDays,
       scheduleAssignments,
       scheduleMap,
       approvedLeaves,
@@ -638,6 +652,7 @@ function createPayrollGroup(
 function applyDailyPayrollTotals({
   group,
   range,
+  expectedPayableDays,
   scheduleAssignments,
   scheduleMap,
   approvedLeaves,
@@ -646,6 +661,7 @@ function applyDailyPayrollTotals({
 }: {
   group: PayrollCrewGroup;
   range: NormalizedSearchParams;
+  expectedPayableDays: number;
   scheduleAssignments: ScheduleAssignmentRow[];
   scheduleMap: Map<string, WorkScheduleRow>;
   approvedLeaves: LeaveRequestRow[];
@@ -728,6 +744,14 @@ function applyDailyPayrollTotals({
   group.expectedPayableDaysCount = 0;
   group.noRosterDatesCount = 0;
   group.noScheduleDatesCount = 0;
+  const scheduledNetMinutes = getScheduledNetMinutesForPeriod(
+    group.employeeId,
+    range,
+    scheduleAssignments,
+    scheduleMap,
+  );
+  group.expectedPayableDaysCount = expectedPayableDays;
+  group.totalRenderedMinutes = expectedPayableDays * scheduledNetMinutes;
 
   for (const [workdate, bucket] of [...dailyBuckets.entries()].sort(([first], [second]) =>
     first.localeCompare(second),
@@ -757,14 +781,9 @@ function applyDailyPayrollTotals({
     const hasSchedule = Boolean(schedule);
     const isExpectedPayable =
       hasSchedule && hasRoster && dayOffLabel === "None" && leaveLabel === "None";
-    const scheduledNetMinutes = bucket.dailyCapMinutes || MAX_CREDITED_SHIFT_MINUTES;
     const payrollMinutes = isExpectedPayable ? scheduledNetMinutes : 0;
     const duplicateCompletedLogsCount = Math.max(0, bucket.completedLogsCount - 1);
 
-    if (isExpectedPayable) {
-      group.expectedPayableDaysCount += 1;
-      group.totalRenderedMinutes += payrollMinutes;
-    }
     if (!hasSchedule) {
       group.noScheduleDatesCount += 1;
     }
@@ -811,6 +830,35 @@ function getDailyCapMinutes(schedule: WorkScheduleRow | null) {
     getExpectedScheduledShiftMinutes(schedule),
     MAX_CREDITED_SHIFT_MINUTES,
   );
+}
+
+function getScheduledNetMinutesForPeriod(
+  employeeId: string,
+  range: NormalizedSearchParams,
+  scheduleAssignments: ScheduleAssignmentRow[],
+  scheduleMap: Map<string, WorkScheduleRow>,
+) {
+  const scheduledMinutes = [
+    ...new Set(
+      getOperationalDatesInRange(range)
+        .map((workdate) =>
+          getDailyCapMinutes(
+            findScheduleForEmployeeDate(
+              employeeId,
+              workdate,
+              scheduleAssignments,
+              scheduleMap,
+            ),
+          ),
+        )
+        .filter((minutes) => minutes > 0),
+    ),
+  ];
+
+  if (scheduledMinutes.length === 0) return MAX_CREDITED_SHIFT_MINUTES;
+  if (scheduledMinutes.length === 1) return scheduledMinutes[0];
+
+  return Math.min(...scheduledMinutes);
 }
 
 function isCompletedPayrollSession(session: ClockSessionRow) {
@@ -909,19 +957,10 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
   return notes.length > 0 ? notes.join("; ") : "Ready for hours review";
 }
 
-function getScheduledNetHoursLabel(group: PayrollCrewGroup) {
-  const scheduledMinutes = [
-    ...new Set(
-      group.days
-        .filter((day) => day.isExpectedPayable)
-        .map((day) => day.dailyCapMinutes),
-    ),
-  ];
+function getGroupScheduledNetMinutes(group: PayrollCrewGroup) {
+  if (group.expectedPayableDaysCount <= 0) return 0;
 
-  if (scheduledMinutes.length === 0) return "0.00";
-  if (scheduledMinutes.length === 1) return formatDecimalHours(scheduledMinutes[0]);
-
-  return "Mixed";
+  return group.totalRenderedMinutes / group.expectedPayableDaysCount;
 }
 
 function getOperationalDatesInRange(range: NormalizedSearchParams) {
@@ -1103,7 +1142,7 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
     range.from,
     range.to,
     String(group.expectedPayableDaysCount),
-    getScheduledNetHoursLabel(group),
+    formatDecimalHours(getGroupScheduledNetMinutes(group)),
     formatDecimalHours(group.totalRenderedMinutes),
     String(group.completedLogsCount),
     String(group.openLogsCount),
@@ -1119,29 +1158,85 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
 
 function withDefaultRange(searchParams: PayrollReportSearchParams): NormalizedSearchParams {
   const today = getManilaDateString(new Date());
-  const from = searchParams.from ?? `${today.slice(0, 8)}01`;
-  const to = searchParams.to ?? today;
+  const defaultRange = getCurrentPayrollCycleRange(today);
+  const from = searchParams.from ?? defaultRange.from;
+  const to = searchParams.to ?? defaultRange.to;
+  const orderedRange = from <= to ? { from, to } : { from: to, to: from };
+  const expectedDays =
+    readExpectedDays(searchParams.expectedDays) ??
+    getPayrollPeriodExpectedDays(orderedRange.from, orderedRange.to);
 
-  return from <= to ? { from, to } : { from: to, to: from };
+  return { ...orderedRange, expectedDays };
 }
 
 function getPresetRange(anchorDate: string, preset: "first_half" | "second_half") {
   const monthPrefix = anchorDate.slice(0, 8);
   if (preset === "first_half") {
-    return { from: `${monthPrefix}01`, to: `${monthPrefix}15` };
+    const range = { from: `${monthPrefix}02`, to: `${monthPrefix}16` };
+
+    return {
+      ...range,
+      expectedDays: getPayrollPeriodExpectedDays(range.from, range.to),
+    };
   }
 
-  return {
+  const range = {
     from: `${monthPrefix}16`,
-    to: getLastDayOfMonth(anchorDate),
+    to: `${getNextMonthPrefix(anchorDate)}02`,
+  };
+
+  return {
+    ...range,
+    expectedDays: getPayrollPeriodExpectedDays(range.from, range.to),
   };
 }
 
-function getLastDayOfMonth(date: string) {
-  const year = Number(date.slice(0, 4));
-  const month = Number(date.slice(5, 7));
-  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  return `${date.slice(0, 8)}${String(lastDay).padStart(2, "0")}`;
+function getCurrentPayrollCycleRange(today: string) {
+  const day = Number(today.slice(8, 10));
+  const monthPrefix = today.slice(0, 8);
+
+  if (day >= 2 && day <= 16) {
+    return { from: `${monthPrefix}02`, to: `${monthPrefix}16` };
+  }
+
+  if (day > 16) {
+    return { from: `${monthPrefix}16`, to: `${getNextMonthPrefix(today)}02` };
+  }
+
+  return { from: `${getPreviousMonthPrefix(today)}16`, to: `${monthPrefix}02` };
+}
+
+function getPayrollPeriodExpectedDays(from: string, to: string) {
+  const fromDay = Number(from.slice(8, 10));
+  const toDay = Number(to.slice(8, 10));
+
+  if (fromDay === 2 && toDay === 16) return 8;
+
+  const inclusiveDays = getOperationalDatesInRange({ from, to, expectedDays: 0 }).length;
+
+  return Math.max(0, Math.round((inclusiveDays * 4) / 7));
+}
+
+function readExpectedDays(value: string | undefined) {
+  if (!value) return null;
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+}
+
+function getNextMonthPrefix(date: string) {
+  const value = new Date(`${date.slice(0, 8)}01T00:00:00+08:00`);
+  value.setUTCMonth(value.getUTCMonth() + 1);
+
+  return `${getManilaDateString(value).slice(0, 8)}`;
+}
+
+function getPreviousMonthPrefix(date: string) {
+  const value = new Date(`${date.slice(0, 8)}01T00:00:00+08:00`);
+  value.setUTCMonth(value.getUTCMonth() - 1);
+
+  return `${getManilaDateString(value).slice(0, 8)}`;
 }
 
 function getManilaDateString(date: Date) {
