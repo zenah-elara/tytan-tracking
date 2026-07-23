@@ -14,6 +14,8 @@ import type { AppRole } from "@/types/auth";
 
 const ADMIN_NOTIFICATIONS_PATH = "/admin/notifications";
 const MANAGER_NOTIFICATIONS_PATH = "/manager/notifications";
+const DEFAULT_NOTIFICATIONS_PAGE_SIZE = 10;
+const MAX_NOTIFICATIONS_PAGE_SIZE = 100;
 
 type EmployeeNotificationContext = {
   id: string;
@@ -120,13 +122,19 @@ export async function notifyAdminsAndEmployeeManager(
   }
 }
 
-export async function getNotificationsForCurrentUser() {
+export async function getNotificationsForCurrentUser(options?: {
+  page?: number;
+  pageSize?: number;
+}) {
   const profile = await getCurrentUserProfile();
 
   if (!profile?.isActive) {
     return {
       notifications: [] as OperationalNotification[],
       unreadCount: 0,
+      totalCount: 0,
+      currentPage: 1,
+      totalPages: 1,
       role: null as AppRole | null,
     };
   }
@@ -138,25 +146,61 @@ export async function getNotificationsForCurrentUser() {
     .eq("profile_id", profile.id)
     .maybeSingle();
 
-  let query = supabase
+  const requestedPage = normalizePositiveInteger(options?.page, 1);
+  const pageSize = Math.min(
+    normalizePositiveInteger(options?.pageSize, DEFAULT_NOTIFICATIONS_PAGE_SIZE),
+    MAX_NOTIFICATIONS_PAGE_SIZE,
+  );
+  const employeeId = (employee as { id?: string } | null)?.id;
+  const scopeFilter = employeeId
+    ? `recipient_employee_id.eq.${employeeId},recipient_role.eq.${profile.role}`
+    : null;
+
+  let totalCountQuery = supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true });
+  let unreadCountQuery = supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("is_read", false);
+
+  if (profile.role !== "admin") {
+    totalCountQuery = scopeFilter
+      ? totalCountQuery.or(scopeFilter)
+      : totalCountQuery.eq("recipient_role", profile.role);
+    unreadCountQuery = scopeFilter
+      ? unreadCountQuery.or(scopeFilter)
+      : unreadCountQuery.eq("recipient_role", profile.role);
+  }
+
+  const [{ count: totalCountResult }, { count: unreadCountResult }] =
+    await Promise.all([totalCountQuery, unreadCountQuery]);
+  const totalCount = totalCountResult ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const currentPage = Math.min(requestedPage, totalPages);
+  const rangeStart = (currentPage - 1) * pageSize;
+
+  let notificationsQuery = supabase
     .from("notifications")
     .select("id,recipient_role,recipient_employee_id,category,type,severity,title,message,entity_type,entity_id,metadata,idempotency_key,is_read,read_at,created_at")
     .order("created_at", { ascending: false })
-    .limit(200);
+    .range(rangeStart, rangeStart + pageSize - 1);
 
   if (profile.role !== "admin") {
-    const employeeId = (employee as { id?: string } | null)?.id;
-    query = employeeId
-      ? query.or(`recipient_employee_id.eq.${employeeId},recipient_role.eq.${profile.role}`)
-      : query.eq("recipient_role", profile.role);
+    notificationsQuery = scopeFilter
+      ? notificationsQuery.or(scopeFilter)
+      : notificationsQuery.eq("recipient_role", profile.role);
   }
 
-  const { data } = await query;
+  const { data } = await notificationsQuery;
   const notifications = ((data ?? []) as NotificationRow[]).map(mapNotificationRow);
 
   return {
     notifications,
-    unreadCount: notifications.filter((notification) => !notification.isRead).length,
+    unreadCount: unreadCountResult ?? 0,
+    totalCount,
+    currentPage,
+    totalPages,
     role: profile.role,
   };
 }
@@ -210,6 +254,34 @@ export async function markAllNotificationsReadAction(formData: FormData) {
   revalidatePath(returnPath);
 }
 
+export async function retryGoogleChatDeliveryAction(formData: FormData) {
+  const profile = await getCurrentUserProfile();
+  const notificationId = String(formData.get("notification_id") ?? "");
+  const returnPath = readNotificationsReturnPath(formData);
+
+  if (!profile?.isActive || profile.role !== "admin" || !notificationId) {
+    return;
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("id,recipient_role,recipient_employee_id,category,type,severity,title,message,entity_type,entity_id,metadata,idempotency_key,is_read,read_at,created_at")
+    .eq("id", notificationId)
+    .maybeSingle();
+
+  if (error || !data) {
+    console.warn("Google Chat retry could not find notification", {
+      notificationId,
+      code: error?.code,
+    });
+    return;
+  }
+
+  await deliverExternalNotification(mapNotificationRow(data as NotificationRow));
+  revalidatePath(returnPath);
+}
+
 async function getEmployeeNotificationContext(employeeId: string) {
   const supabase = await createClient();
   const { data } = await supabase
@@ -222,20 +294,64 @@ async function getEmployeeNotificationContext(employeeId: string) {
 }
 
 async function deliverExternalNotification(notification: OperationalNotification) {
+  const supabase = await createClient();
+
   try {
     const result = await sendGoogleChatNotification(notification);
 
-    if (result.status === "skipped") return;
-
-    const supabase = await createClient();
-    await supabase.from("notification_delivery_attempts").insert({
-      notification_id: notification.id,
-      channel: "google_chat",
+    await recordGoogleChatDeliveryAttempt(supabase, notification, {
       status: result.status,
-      response_summary: result.responseSummary,
+      responseSummary:
+        result.status === "skipped"
+          ? "GOOGLE_CHAT_WEBHOOK_URL is not configured"
+          : result.responseSummary,
     });
+
+    if (result.status === "failed") {
+      console.warn("Google Chat notification delivery failed", {
+        notificationId: notification.id,
+        category: notification.category,
+        type: notification.type,
+        responseSummary: result.responseSummary,
+      });
+    }
   } catch {
-    // External delivery is best-effort and must never fail the primary action.
+    await recordGoogleChatDeliveryAttempt(supabase, notification, {
+      status: "failed",
+      responseSummary: "Google Chat delivery failed before the request completed",
+    });
+    console.warn("Google Chat notification delivery failed before completion", {
+      notificationId: notification.id,
+      category: notification.category,
+      type: notification.type,
+    });
+  }
+}
+
+async function recordGoogleChatDeliveryAttempt(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  notification: OperationalNotification,
+  result: { status: "skipped" | "sent" | "failed"; responseSummary: string },
+) {
+  const { error } = await supabase.from("notification_delivery_attempts").insert({
+    notification_id: notification.id,
+    channel: "google_chat",
+    status: result.status,
+    response_summary: result.responseSummary,
+    metadata: {
+      category: notification.category,
+      type: notification.type,
+      entity_type: notification.entityType,
+      entity_id: notification.entityId,
+    },
+  });
+
+  if (error) {
+    console.warn("Google Chat delivery attempt could not be recorded", {
+      notificationId: notification.id,
+      code: error.code,
+      status: result.status,
+    });
   }
 }
 
@@ -265,4 +381,8 @@ function mapNotificationRow(row: NotificationRow): OperationalNotification {
     readAt: row.read_at,
     createdAt: row.created_at,
   };
+}
+
+function normalizePositiveInteger(value: number | undefined, fallback: number) {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : fallback;
 }

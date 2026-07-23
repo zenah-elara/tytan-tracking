@@ -576,6 +576,11 @@ export async function submitLeaveRequestAction(formData: FormData) {
   }
 
   const requestId = (request as { id?: string } | null)?.id;
+
+  if (!requestId) {
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
+  }
+
   const reserved = await reservePendingLeaveHours({
     employeeId: employee.id,
     requestLeaveTypeName: leaveType.name,
@@ -584,6 +589,10 @@ export async function submitLeaveRequestAction(formData: FormData) {
   });
 
   if (!reserved) {
+    await deleteUnreservedLeaveRequest({
+      requestId,
+      employeeId: employee.id,
+    });
     redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
   }
 
@@ -713,6 +722,14 @@ export async function submitLeaveRequestFormAction(
   }
 
   const requestId = (request as { id?: string } | null)?.id;
+
+  if (!requestId) {
+    return {
+      status: "error",
+      message: "That request could not be completed. Please try again.",
+    };
+  }
+
   const reserved = await reservePendingLeaveHours({
     employeeId: employee.id,
     requestLeaveTypeName: leaveType.name,
@@ -721,9 +738,16 @@ export async function submitLeaveRequestFormAction(
   });
 
   if (!reserved) {
+    const cleanedUp = await deleteUnreservedLeaveRequest({
+      requestId,
+      employeeId: employee.id,
+    });
+
     return {
       status: "error",
-      message: "That request was saved, but the leave balance could not be reserved. Please contact an administrator.",
+      message: cleanedUp
+        ? "We could not reserve the leave balance, so the request was not submitted. Please try again."
+        : "We could not reserve the leave balance. Please contact an administrator before trying again.",
     };
   }
 
@@ -1005,6 +1029,37 @@ async function reservePendingLeaveHours({
     used: Number(balance?.used ?? 0),
     pending: nextPending,
   });
+}
+
+async function deleteUnreservedLeaveRequest({
+  requestId,
+  employeeId,
+}: {
+  requestId: string;
+  employeeId: string;
+}) {
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("leave_requests")
+    .update({
+      status: "deleted",
+      deletedat: new Date().toISOString(),
+      deletedby: employeeId,
+    })
+    .eq("id", requestId)
+    .eq("employee_id", employeeId)
+    .eq("status", "pending_supervisor");
+
+  if (error) {
+    console.warn("Unreserved leave request cleanup failed", {
+      requestId,
+      employeeId,
+      code: error.code,
+    });
+    return false;
+  }
+
+  return true;
 }
 
 async function approvePendingLeaveHours({
