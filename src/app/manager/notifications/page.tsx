@@ -3,8 +3,16 @@ import { getNotificationsForCurrentUser } from "@/lib/notifications/actions";
 
 const MANAGER_NOTIFICATIONS_PATH = "/manager/notifications";
 
-export default async function ManagerNotificationsPage() {
-  const { notifications, unreadCount } = await getNotificationsForCurrentUser();
+type ManagerNotificationsPageProps = {
+  searchParams: Promise<{ page?: string }>;
+};
+
+export default async function ManagerNotificationsPage({
+  searchParams,
+}: ManagerNotificationsPageProps) {
+  const { page } = await searchParams;
+  const { notifications, unreadCount, currentPage, totalPages } =
+    await getNotificationsForCurrentUser({ page: Number(page) });
 
   return (
     <NotificationCenter
@@ -13,6 +21,8 @@ export default async function ManagerNotificationsPage() {
       notifications={notifications}
       unreadCount={unreadCount}
       returnPath={MANAGER_NOTIFICATIONS_PATH}
+      currentPage={currentPage}
+      totalPages={totalPages}
     />
   );
 }

@@ -18,8 +18,8 @@ const SEVERITY_STYLES = {
 export async function NotificationBell({ role }: { role: AppRole }) {
   if (role === "employee") return null;
 
-  const { notifications, unreadCount } = await getNotificationsForCurrentUser();
-  const latestNotifications = notifications.slice(0, 3);
+  const { notifications: latestNotifications, unreadCount } =
+    await getNotificationsForCurrentUser({ pageSize: 5 });
   const viewAllHref = role === "admin" ? "/admin/notifications" : "/manager/notifications";
 
   return (
