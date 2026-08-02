@@ -589,11 +589,15 @@ export async function submitLeaveRequestAction(formData: FormData) {
   });
 
   if (!reserved) {
-    await deleteUnreservedLeaveRequest({
+    const cleanedUp = await deleteUnreservedLeaveRequest({
       requestId,
       employeeId: employee.id,
     });
-    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
+    redirectWithStatus(
+      EMPLOYEE_NEW_LEAVE_PATH,
+      "error",
+      cleanedUp ? "balance-reserve-failed" : "balance-cleanup-failed",
+    );
   }
 
   await notifyLeaveEvent(employee.id, {
@@ -663,6 +667,7 @@ export async function submitLeaveRequestFormAction(
     .eq("start_date", startDate)
     .eq("end_date", endDate)
     .eq("total_hours", requestedHours)
+    .neq("status", "deleted")
     .gte("created_at", duplicateSince)
     .limit(1);
 
@@ -746,8 +751,8 @@ export async function submitLeaveRequestFormAction(
     return {
       status: "error",
       message: cleanedUp
-        ? "We could not reserve the leave balance, so the request was not submitted. Please try again."
-        : "We could not reserve the leave balance. Please contact an administrator before trying again.",
+        ? "Your leave request was not submitted because the balance could not be reserved. Please try again or contact an administrator."
+        : "Your leave request needs admin review because the balance could not be reserved and the pending request could not be cleaned up.",
     };
   }
 

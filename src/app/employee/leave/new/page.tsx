@@ -60,9 +60,23 @@ export default async function NewLeavePage({ searchParams }: PageProps) {
 
 function StatusMessage({ error }: { error?: string }) {
   if (!error) return null;
+  const message = getErrorMessage(error);
+
   return (
     <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-      That request could not be submitted. Please check the form and try again.
+      {message}
     </p>
   );
+}
+
+function getErrorMessage(error: string) {
+  if (error === "balance-reserve-failed") {
+    return "Your leave request was not submitted because the balance could not be reserved. Please try again or contact an administrator.";
+  }
+
+  if (error === "balance-cleanup-failed") {
+    return "Your leave request needs admin review because the balance could not be reserved and the pending request could not be cleaned up.";
+  }
+
+  return "That request could not be submitted. Please check the form and try again.";
 }
