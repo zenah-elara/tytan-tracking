@@ -90,13 +90,23 @@ export function getEffectiveClockEnd(
   schedule: ClockDurationSchedule,
   now = new Date(),
 ) {
+  const scheduledEnd = schedule
+    ? getScheduledShiftEnd(
+        session.workdate,
+        readShiftStart(schedule),
+        readShiftEnd(schedule),
+      ).getTime()
+    : null;
+
   if (session.clockoutat) {
-    return new Date(session.clockoutat).getTime();
+    const actualClockOut = new Date(session.clockoutat).getTime();
+
+    return scheduledEnd === null
+      ? actualClockOut
+      : Math.min(actualClockOut, scheduledEnd);
   }
 
-  const openEnd = schedule
-    ? getOpenSessionDurationCutoff(session, schedule)
-    : now.getTime();
+  const openEnd = scheduledEnd ?? now.getTime();
 
   return Math.min(now.getTime(), openEnd);
 }
@@ -179,17 +189,4 @@ function getCreditedShiftCapMinutes(schedule: ClockDurationSchedule) {
     getExpectedScheduledShiftMinutes(schedule),
     MAX_CREDITED_SHIFT_MINUTES,
   );
-}
-
-function getOpenSessionDurationCutoff(
-  session: ClockDurationSession,
-  schedule: NonNullable<ClockDurationSchedule>,
-) {
-  const scheduledEnd = getScheduledShiftEnd(
-    session.workdate,
-    readShiftStart(schedule),
-    readShiftEnd(schedule),
-  );
-
-  return scheduledEnd.getTime() + MISSING_CLOCK_OUT_GRACE_MINUTES * 60 * 1000;
 }
