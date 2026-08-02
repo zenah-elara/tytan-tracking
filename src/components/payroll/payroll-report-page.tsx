@@ -12,7 +12,8 @@ import type { ClockSessionStatus } from "@/types/clock";
 export type PayrollReportSearchParams = {
   from?: string;
   to?: string;
-  expectedDays?: string;
+  month?: string;
+  cutoff?: string;
 };
 
 type EmployeeRow = {
@@ -130,8 +131,12 @@ type PayrollCrewGroup = {
 type NormalizedSearchParams = {
   from: string;
   to: string;
-  expectedDays: number;
+  month: string;
+  cutoff: PayrollCutoff;
+  payableDates: string[];
 };
+
+type PayrollCutoff = "first_half" | "second_half";
 
 const WEEKDAYS = [
   "Sunday",
@@ -142,6 +147,10 @@ const WEEKDAYS = [
   "Friday",
   "Saturday",
 ];
+const PAYROLL_CUTOFF_LABELS = {
+  first_half: "1st-15th",
+  second_half: "16th-month end",
+} satisfies Record<PayrollCutoff, string>;
 
 export async function PayrollReportPage({
   searchParams,
@@ -248,7 +257,8 @@ export async function PayrollReportPage({
               Payroll Report
             </h1>
             <p className="mt-1 max-w-2xl text-sm text-zinc-600">
-              View rendered hours by crew member for a selected pay period.
+              View company payroll hours by crew member for the selected month
+              and cutoff. Clock records remain audit-only.
             </p>
           </div>
           <a
@@ -271,14 +281,37 @@ export async function PayrollReportPage({
 
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Pay period" value={`${range.from} to ${range.to}`} />
-        <SummaryCard label="Expected payable days" value={String(range.expectedDays)} />
+        <SummaryCard
+          label="Payroll cutoff"
+          value={PAYROLL_CUTOFF_LABELS[range.cutoff]}
+        />
+        <SummaryCard
+          label="Expected payable days"
+          value={String(range.payableDates.length)}
+        />
         <SummaryCard label="Crew with hours" value={String(crewWithHours)} />
         <SummaryCard label="Payroll hours" value={formatHours(totalPayrollMinutes)} />
       </section>
 
+      <section className="rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
+        <h2 className="text-sm font-black uppercase tracking-[0.12em] text-[#001f4d]/70">
+          Expected Payable Dates
+        </h2>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {range.payableDates.map((date) => (
+            <span
+              key={date}
+              className="inline-flex rounded-full border border-[#efe6b6] bg-[#fffdf2] px-3 py-1 text-xs font-black text-[#001f4d]"
+            >
+              {formatPayrollDateHeader(date)}
+            </span>
+          ))}
+        </div>
+      </section>
+
       {groups.length === 0 ? (
         <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
-          <EmptyState message="No rendered hours found for this pay period." />
+          <EmptyState message="No employees found for this payroll period." />
         </section>
       ) : (
         <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
@@ -347,61 +380,66 @@ export async function PayrollReportPage({
 }
 
 function PayrollFilters({ range }: { range: NormalizedSearchParams }) {
-  const firstHalf = getPresetRange(range.from, "first_half");
-  const secondHalf = getPresetRange(range.from, "second_half");
+  const firstHalf = getPayrollPeriodDates(range.month, "first_half");
+  const secondHalf = getPayrollPeriodDates(range.month, "second_half");
 
   return (
     <section className="rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
-      <form className="grid gap-4 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
+      <form className="grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
         <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
-          Start date
+          Payroll month
           <input
-            name="from"
-            type="date"
-            defaultValue={range.from}
+            name="month"
+            type="month"
+            defaultValue={range.month}
             className={fieldClassName}
           />
         </label>
         <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
-          End date
-          <input
-            name="to"
-            type="date"
-            defaultValue={range.to}
+          Payroll period
+          <select
+            name="cutoff"
+            defaultValue={range.cutoff}
             className={fieldClassName}
-          />
-        </label>
-        <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
-          Expected payable days
-          <input
-            name="expectedDays"
-            type="number"
-            min="0"
-            max="31"
-            step="1"
-            defaultValue={range.expectedDays}
-            className={fieldClassName}
-          />
+          >
+            <option value="first_half">1st-15th</option>
+            <option value="second_half">16th-month end</option>
+          </select>
         </label>
         <button className="h-11 rounded-lg bg-[#001f4d] px-4 text-sm font-bold text-white transition hover:bg-[#07336f]">
           Apply filter
         </button>
       </form>
       <div className="mt-4 flex flex-wrap gap-2">
-        <PresetLink label="2nd-16th" range={firstHalf} />
-        <PresetLink label="16th-2nd" range={secondHalf} />
+        <PresetLink label="1st-15th" month={range.month} cutoff="first_half" range={firstHalf} />
+        <PresetLink
+          label="16th-month end"
+          month={range.month}
+          cutoff="second_half"
+          range={secondHalf}
+        />
       </div>
     </section>
   );
 }
 
-function PresetLink({ label, range }: { label: string; range: NormalizedSearchParams }) {
+function PresetLink({
+  label,
+  month,
+  cutoff,
+  range,
+}: {
+  label: string;
+  month: string;
+  cutoff: PayrollCutoff;
+  range: { from: string; to: string };
+}) {
   return (
     <a
-      href={`?from=${range.from}&to=${range.to}&expectedDays=${range.expectedDays}`}
+      href={`?month=${month}&cutoff=${cutoff}`}
       className="inline-flex h-9 items-center rounded-lg border border-[#efe6b6] bg-[#fffdf2] px-3 text-xs font-black text-[#001f4d] transition hover:border-[#f2d300] hover:bg-[#fff7bf]"
     >
-      {label}
+      {label}: {formatPayrollDateHeader(range.from)}-{formatPayrollDateHeader(range.to)}
     </a>
   );
 }
@@ -476,7 +514,7 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
                   {formatHours(day.payrollMinutes)}
                 </td>
                 <td className="px-5 py-4 text-zinc-600">
-                  {day.isExpectedPayable ? "Payable workday" : "Excluded"}
+                  Payable workday
                 </td>
                 <td className="px-5 py-4 text-zinc-600">{day.leaveLabel}</td>
                 <td className="px-5 py-4 text-zinc-600">{day.dayOffLabel}</td>
@@ -606,7 +644,6 @@ function groupPayrollLogs({
     applyDailyPayrollTotals({
       group,
       range,
-      expectedPayableDays: range.expectedDays,
       scheduleAssignments,
       scheduleMap,
       approvedLeaves,
@@ -654,7 +691,6 @@ function createPayrollGroup(
 function applyDailyPayrollTotals({
   group,
   range,
-  expectedPayableDays,
   scheduleAssignments,
   scheduleMap,
   approvedLeaves,
@@ -663,7 +699,6 @@ function applyDailyPayrollTotals({
 }: {
   group: PayrollCrewGroup;
   range: NormalizedSearchParams;
-  expectedPayableDays: number;
   scheduleAssignments: ScheduleAssignmentRow[];
   scheduleMap: Map<string, WorkScheduleRow>;
   approvedLeaves: LeaveRequestRow[];
@@ -685,7 +720,7 @@ function applyDailyPayrollTotals({
     }
   >();
 
-  for (const workdate of getOperationalDatesInRange(range)) {
+  for (const workdate of range.payableDates) {
     dailyBuckets.set(workdate, {
       grossMinutes: 0,
       breakMinutes: 0,
@@ -752,8 +787,8 @@ function applyDailyPayrollTotals({
     scheduleAssignments,
     scheduleMap,
   );
-  group.expectedPayableDaysCount = expectedPayableDays;
-  group.totalRenderedMinutes = expectedPayableDays * scheduledNetMinutes;
+  group.expectedPayableDaysCount = range.payableDates.length;
+  group.totalRenderedMinutes = range.payableDates.length * scheduledNetMinutes;
 
   for (const [workdate, bucket] of [...dailyBuckets.entries()].sort(([first], [second]) =>
     first.localeCompare(second),
@@ -775,15 +810,10 @@ function applyDailyPayrollTotals({
       workdate,
       dayOffRosters,
     );
-    const hasRoster = hasPayrollMonthRoster(
-      group.employeeId,
-      workdate,
-      dayOffRosters,
-    );
+    const hasRoster = hasPayrollMonthRoster(group.employeeId, workdate, dayOffRosters);
     const hasSchedule = Boolean(schedule);
-    const isExpectedPayable =
-      hasSchedule && hasRoster && dayOffLabel === "None" && leaveLabel === "None";
-    const payrollMinutes = isExpectedPayable ? scheduledNetMinutes : 0;
+    const isExpectedPayable = true;
+    const payrollMinutes = scheduledNetMinutes;
     const duplicateCompletedLogsCount = Math.max(0, bucket.completedLogsCount - 1);
 
     if (!hasSchedule) {
@@ -929,27 +959,25 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
     notes.push(
       `${group.duplicateCompletedLogsCount} duplicate/same-day clock record${
         group.duplicateCompletedLogsCount === 1 ? "" : "s"
-      } capped by operational day`,
+      } noted for audit`,
     );
   }
   if (group.restDayCompletedLogsCount > 0) {
     notes.push(
       `${group.restDayCompletedLogsCount} completed rest-day clock record${
         group.restDayCompletedLogsCount === 1 ? "" : "s"
-      } excluded from regular payroll`,
+      } noted for audit`,
     );
   }
   if (group.leaveDayCompletedLogsCount > 0) {
     notes.push(
       `${group.leaveDayCompletedLogsCount} completed PTO/leave clock record${
         group.leaveDayCompletedLogsCount === 1 ? "" : "s"
-      } excluded from regular payroll`,
+      } noted for audit`,
     );
   }
   if (group.noRosterDatesCount > 0) {
-    notes.push(
-      "No roster set for payroll month on one or more dates; payroll may be inaccurate",
-    );
+    notes.push("No roster set for one or more dates");
   }
   if (group.noScheduleDatesCount > 0) {
     notes.push("No schedule configured for one or more dates");
@@ -965,7 +993,7 @@ function getGroupScheduledNetMinutes(group: PayrollCrewGroup) {
   return group.totalRenderedMinutes / group.expectedPayableDaysCount;
 }
 
-function getOperationalDatesInRange(range: NormalizedSearchParams) {
+function getOperationalDatesInRange(range: { from: string; to: string }) {
   const dates: string[] = [];
   let current = range.from;
 
@@ -1059,7 +1087,7 @@ function getDayStatusNote(day: PayrollDay) {
     notes.push(
       `${day.completedLogsCount} completed clock record${
         day.completedLogsCount === 1 ? "" : "s"
-      } ${day.isExpectedPayable ? "included" : "excluded from regular payroll"}`,
+      } noted for audit`,
     );
   }
   if (day.openLogsCount > 0) {
@@ -1080,14 +1108,14 @@ function getDayStatusNote(day: PayrollDay) {
     notes.push(
       `${day.duplicateCompletedLogsCount} duplicate clock record${
         day.duplicateCompletedLogsCount === 1 ? "" : "s"
-      } capped`,
+      } noted`,
     );
   }
   if (day.dayOffLabel !== "None" && day.completedLogsCount > 0) {
-    notes.push("Completed work on rostered rest day");
+    notes.push("Completed work on rostered rest day; audit only");
   }
   if (day.leaveLabel !== "None" && day.completedLogsCount > 0) {
-    notes.push("Completed work on approved PTO/leave date");
+    notes.push("Completed work on approved PTO/leave date; audit only");
   }
   if (!day.hasRoster) {
     notes.push("No roster set for payroll month");
@@ -1123,34 +1151,21 @@ function getLeaveLabel(
 }
 
 function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams) {
+  const dateHeaders = range.payableDates.map(formatPayrollDateHeader);
   const headers = [
     "Employee Name",
-    "Work Email",
-    "Department",
-    "Date From",
-    "Date To",
-    "Expected Payable Days",
-    "Scheduled Net Hours per Day",
-    "Total Payroll Hours",
-    "Completed Clock Records Count",
-    "In-Progress/Open Clock Records Count",
-    "Excluded Rest-Day Clock Records Count",
-    "Clock Record Notes / Exceptions",
+    `Total for ${formatPayrollPeriodLabel(range)} Payroll`,
+    ...dateHeaders,
   ];
-  const rows = groups.map((group) => [
-    group.employeeName,
-    group.employeeEmail,
-    group.departmentName,
-    range.from,
-    range.to,
-    String(group.expectedPayableDaysCount),
-    formatDecimalHours(getGroupScheduledNetMinutes(group)),
-    formatDecimalHours(group.totalRenderedMinutes),
-    String(group.completedLogsCount),
-    String(group.openLogsCount),
-    String(group.restDayCompletedLogsCount),
-    getGroupStatusNote(group),
-  ]);
+  const rows = groups.map((group) => {
+    const dailyHours = formatHourCell(getGroupScheduledNetMinutes(group));
+
+    return [
+      group.employeeName,
+      formatDecimalHours(group.totalRenderedMinutes),
+      ...range.payableDates.map(() => dailyHours),
+    ];
+  });
   const csv = [headers, ...rows]
     .map((row) => row.map(escapeCsvCell).join(","))
     .join("\n");
@@ -1160,85 +1175,71 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
 
 function withDefaultRange(searchParams: PayrollReportSearchParams): NormalizedSearchParams {
   const today = getManilaDateString(new Date());
-  const defaultRange = getCurrentPayrollCycleRange(today);
-  const from = searchParams.from ?? defaultRange.from;
-  const to = searchParams.to ?? defaultRange.to;
-  const orderedRange = from <= to ? { from, to } : { from: to, to: from };
-  const expectedDays =
-    readExpectedDays(searchParams.expectedDays) ??
-    getPayrollPeriodExpectedDays(orderedRange.from, orderedRange.to);
-
-  return { ...orderedRange, expectedDays };
-}
-
-function getPresetRange(anchorDate: string, preset: "first_half" | "second_half") {
-  const monthPrefix = anchorDate.slice(0, 8);
-  if (preset === "first_half") {
-    const range = { from: `${monthPrefix}02`, to: `${monthPrefix}16` };
-
-    return {
-      ...range,
-      expectedDays: getPayrollPeriodExpectedDays(range.from, range.to),
-    };
-  }
-
-  const range = {
-    from: `${monthPrefix}16`,
-    to: `${getNextMonthPrefix(anchorDate)}02`,
-  };
+  const month = normalizePayrollMonth(searchParams.month) ?? today.slice(0, 7);
+  const cutoff = normalizePayrollCutoff(searchParams.cutoff);
+  const range = getPayrollPeriodDates(month, cutoff);
 
   return {
     ...range,
-    expectedDays: getPayrollPeriodExpectedDays(range.from, range.to),
+    month,
+    cutoff,
+    payableDates: getExpectedPayableDates(range.from, range.to),
   };
 }
 
-function getCurrentPayrollCycleRange(today: string) {
-  const day = Number(today.slice(8, 10));
-  const monthPrefix = today.slice(0, 8);
+function normalizePayrollMonth(value: string | undefined) {
+  if (!value || !/^\d{4}-\d{2}$/.test(value)) return null;
 
-  if (day >= 2 && day <= 16) {
-    return { from: `${monthPrefix}02`, to: `${monthPrefix}16` };
+  return value;
+}
+
+function normalizePayrollCutoff(value: string | undefined): PayrollCutoff {
+  return value === "second_half" ? "second_half" : "first_half";
+}
+
+function getPayrollPeriodDates(month: string, cutoff: PayrollCutoff) {
+  if (cutoff === "first_half") {
+    return { from: `${month}-01`, to: `${month}-15` };
   }
 
-  if (day > 16) {
-    return { from: `${monthPrefix}16`, to: `${getNextMonthPrefix(today)}02` };
-  }
-
-  return { from: `${getPreviousMonthPrefix(today)}16`, to: `${monthPrefix}02` };
+  return { from: `${month}-16`, to: getLastDayOfMonth(month) };
 }
 
-function getPayrollPeriodExpectedDays(from: string, to: string) {
-  const fromDay = Number(from.slice(8, 10));
-  const toDay = Number(to.slice(8, 10));
-
-  if (fromDay === 2 && toDay === 16) return 8;
-
-  const inclusiveDays = getOperationalDatesInRange({ from, to, expectedDays: 0 }).length;
-
-  return Math.max(0, Math.round((inclusiveDays * 4) / 7));
+function getExpectedPayableDates(periodStart: string, periodEnd: string) {
+  return getOperationalDatesInRange({ from: periodStart, to: periodEnd }).filter(
+    (date) => !isWeekend(date),
+  );
 }
 
-function readExpectedDays(value: string | undefined) {
-  if (!value) return null;
+function getLastDayOfMonth(month: string) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const value = new Date(Date.UTC(year, monthNumber, 0));
 
-  const parsed = Number(value);
-
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+  return `${month}-${String(value.getUTCDate()).padStart(2, "0")}`;
 }
 
-function getNextMonthPrefix(date: string) {
-  const value = new Date(`${date.slice(0, 8)}01T00:00:00+08:00`);
-  value.setUTCMonth(value.getUTCMonth() + 1);
+function isWeekend(date: string) {
+  const weekday = getManilaWeekday(date);
 
-  return `${getManilaDateString(value).slice(0, 8)}`;
+  return weekday === "Saturday" || weekday === "Sunday";
 }
 
-function getPreviousMonthPrefix(date: string) {
-  const value = new Date(`${date.slice(0, 8)}01T00:00:00+08:00`);
-  value.setUTCMonth(value.getUTCMonth() - 1);
+function formatPayrollPeriodLabel(range: NormalizedSearchParams) {
+  return `${formatPayrollDateHeader(range.from)}-${formatPayrollDateHeader(range.to)}`;
+}
 
-  return `${getManilaDateString(value).slice(0, 8)}`;
+function formatPayrollDateHeader(date: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Manila",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(`${date}T00:00:00+08:00`));
+}
+
+function formatHourCell(minutes: number) {
+  const hours = minutes / 60;
+
+  return `${Number.isInteger(hours) ? String(hours) : hours.toFixed(2)}hrs`;
 }
 
 function getManilaDateString(date: Date) {
