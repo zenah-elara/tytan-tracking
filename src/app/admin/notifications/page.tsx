@@ -1,10 +1,26 @@
 import { NotificationCenter } from "@/components/notifications/notification-center";
-import { getNotificationsForCurrentUser } from "@/lib/notifications/actions";
+import {
+  getNotificationsForCurrentUser,
+  getRecentGoogleChatDeliveryAttemptsForAdmin,
+} from "@/lib/notifications/actions";
 
 const ADMIN_NOTIFICATIONS_PATH = "/admin/notifications";
 
-export default async function AdminNotificationsPage() {
-  const { notifications, unreadCount } = await getNotificationsForCurrentUser();
+type AdminNotificationsPageProps = {
+  searchParams: Promise<{ page?: string }>;
+};
+
+export default async function AdminNotificationsPage({
+  searchParams,
+}: AdminNotificationsPageProps) {
+  const { page } = await searchParams;
+  const [
+    { notifications, unreadCount, currentPage, totalPages },
+    googleChatDeliveryAttempts,
+  ] = await Promise.all([
+    getNotificationsForCurrentUser({ page: Number(page) }),
+    getRecentGoogleChatDeliveryAttemptsForAdmin(),
+  ]);
 
   return (
     <NotificationCenter
@@ -13,6 +29,9 @@ export default async function AdminNotificationsPage() {
       notifications={notifications}
       unreadCount={unreadCount}
       returnPath={ADMIN_NOTIFICATIONS_PATH}
+      currentPage={currentPage}
+      totalPages={totalPages}
+      googleChatDeliveryAttempts={googleChatDeliveryAttempts}
     />
   );
 }

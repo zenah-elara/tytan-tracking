@@ -5,6 +5,8 @@ import { getCurrentUserProfile } from "@/lib/auth/session";
 import { sendGoogleChatNotification } from "@/lib/notifications/google-chat";
 import { createClient } from "@/lib/supabase/server";
 import type {
+  GoogleChatDeliveryAttempt,
+  GoogleChatDeliveryAttemptRow,
   NotificationCategory,
   NotificationRow,
   NotificationSeverity,
@@ -16,6 +18,7 @@ const ADMIN_NOTIFICATIONS_PATH = "/admin/notifications";
 const MANAGER_NOTIFICATIONS_PATH = "/manager/notifications";
 const DEFAULT_NOTIFICATIONS_PAGE_SIZE = 10;
 const MAX_NOTIFICATIONS_PAGE_SIZE = 100;
+const GOOGLE_CHAT_ATTEMPTS_LIMIT = 10;
 
 type EmployeeNotificationContext = {
   id: string;
@@ -254,6 +257,33 @@ export async function markAllNotificationsReadAction(formData: FormData) {
   revalidatePath(returnPath);
 }
 
+export async function getRecentGoogleChatDeliveryAttemptsForAdmin() {
+  const profile = await getCurrentUserProfile();
+
+  if (!profile?.isActive || profile.role !== "admin") {
+    return [] as GoogleChatDeliveryAttempt[];
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("notification_delivery_attempts")
+    .select("id,notification_id,channel,status,response_summary,metadata,attempted_at")
+    .eq("channel", "google_chat")
+    .order("attempted_at", { ascending: false })
+    .limit(GOOGLE_CHAT_ATTEMPTS_LIMIT);
+
+  if (error) {
+    console.warn("Google Chat delivery attempts could not be loaded", {
+      code: error.code,
+    });
+    return [];
+  }
+
+  return ((data ?? []) as GoogleChatDeliveryAttemptRow[]).map(
+    mapGoogleChatDeliveryAttemptRow,
+  );
+}
+
 export async function retryGoogleChatDeliveryAction(formData: FormData) {
   const profile = await getCurrentUserProfile();
   const notificationId = String(formData.get("notification_id") ?? "");
@@ -264,6 +294,23 @@ export async function retryGoogleChatDeliveryAction(formData: FormData) {
   }
 
   const supabase = await createClient();
+  const { data: sentAttempt, error: sentAttemptError } = await supabase
+    .from("notification_delivery_attempts")
+    .select("id")
+    .eq("notification_id", notificationId)
+    .eq("channel", "google_chat")
+    .eq("status", "sent")
+    .limit(1)
+    .maybeSingle();
+
+  if (sentAttemptError) {
+    console.warn("Google Chat retry could not check previous attempts", {
+      notificationId,
+      code: sentAttemptError.code,
+    });
+    return;
+  }
+
   const { data, error } = await supabase
     .from("notifications")
     .select("id,recipient_role,recipient_employee_id,category,type,severity,title,message,entity_type,entity_id,metadata,idempotency_key,is_read,read_at,created_at")
@@ -278,7 +325,19 @@ export async function retryGoogleChatDeliveryAction(formData: FormData) {
     return;
   }
 
-  await deliverExternalNotification(mapNotificationRow(data as NotificationRow));
+  const notification = mapNotificationRow(data as NotificationRow);
+
+  if (sentAttempt) {
+    await recordGoogleChatDeliveryAttempt(supabase, notification, {
+      status: "skipped",
+      responseSummary:
+        "Google Chat retry skipped because this notification already has a sent delivery attempt",
+    });
+    revalidatePath(returnPath);
+    return;
+  }
+
+  await deliverExternalNotification(notification);
   revalidatePath(returnPath);
 }
 
@@ -380,6 +439,20 @@ function mapNotificationRow(row: NotificationRow): OperationalNotification {
     isRead: row.is_read,
     readAt: row.read_at,
     createdAt: row.created_at,
+  };
+}
+
+function mapGoogleChatDeliveryAttemptRow(
+  row: GoogleChatDeliveryAttemptRow,
+): GoogleChatDeliveryAttempt {
+  return {
+    id: row.id,
+    notificationId: row.notification_id,
+    channel: row.channel,
+    status: row.status,
+    responseSummary: row.response_summary,
+    metadata: row.metadata ?? {},
+    attemptedAt: row.attempted_at,
   };
 }
 

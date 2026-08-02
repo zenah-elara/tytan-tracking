@@ -1,8 +1,11 @@
+import Link from "next/link";
 import {
   markAllNotificationsReadAction,
   markNotificationReadAction,
+  retryGoogleChatDeliveryAction,
 } from "@/lib/notifications/actions";
 import type {
+  GoogleChatDeliveryAttempt,
   NotificationCategory,
   NotificationSeverity,
   OperationalNotification,
@@ -14,6 +17,9 @@ type NotificationCenterProps = {
   notifications: OperationalNotification[];
   unreadCount: number;
   returnPath: string;
+  currentPage: number;
+  totalPages: number;
+  googleChatDeliveryAttempts?: GoogleChatDeliveryAttempt[];
 };
 
 const CATEGORY_LABELS = {
@@ -38,6 +44,9 @@ export function NotificationCenter({
   notifications,
   unreadCount,
   returnPath,
+  currentPage,
+  totalPages,
+  googleChatDeliveryAttempts,
 }: NotificationCenterProps) {
   const groupedNotifications = groupNotifications(notifications);
 
@@ -70,30 +79,201 @@ export function NotificationCenter({
           No notifications yet.
         </section>
       ) : (
-        groupedNotifications.map(([dateLabel, items]) => (
-          <section
-            key={dateLabel}
-            className="rounded-lg border border-[#efe6b6] bg-white shadow-sm"
-          >
-            <div className="border-b border-[#efe6b6] px-5 py-4">
-              <h2 className="text-sm font-black uppercase tracking-[0.12em] text-[#001f4d]/70">
-                {dateLabel}
-              </h2>
-            </div>
-            <div className="divide-y divide-zinc-100">
-              {items.map((notification) => (
-                <NotificationItem
-                  key={notification.id}
-                  notification={notification}
-                  returnPath={returnPath}
-                />
-              ))}
-            </div>
-          </section>
-        ))
+        <>
+          {groupedNotifications.map(([dateLabel, items]) => (
+            <section
+              key={dateLabel}
+              className="rounded-lg border border-[#efe6b6] bg-white shadow-sm"
+            >
+              <div className="border-b border-[#efe6b6] px-5 py-4">
+                <h2 className="text-sm font-black uppercase tracking-[0.12em] text-[#001f4d]/70">
+                  {dateLabel}
+                </h2>
+              </div>
+              <div className="divide-y divide-zinc-100">
+                {items.map((notification) => (
+                  <NotificationItem
+                    key={notification.id}
+                    notification={notification}
+                    returnPath={returnPath}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            returnPath={returnPath}
+          />
+        </>
       )}
+
+      {googleChatDeliveryAttempts ? (
+        <GoogleChatDeliveryAttempts
+          attempts={googleChatDeliveryAttempts}
+          returnPath={returnPath}
+        />
+      ) : null}
     </div>
   );
+}
+
+function GoogleChatDeliveryAttempts({
+  attempts,
+  returnPath,
+}: {
+  attempts: GoogleChatDeliveryAttempt[];
+  returnPath: string;
+}) {
+  return (
+    <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
+      <div className="flex flex-col gap-2 border-b border-[#efe6b6] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-sm font-black uppercase tracking-[0.12em] text-[#001f4d]/70">
+            Google Chat Delivery Attempts
+          </h2>
+          <p className="mt-1 text-sm text-zinc-600">
+            Latest safe delivery diagnostics for the Google Chat webhook.
+          </p>
+        </div>
+        <span className="inline-flex w-fit rounded-full border border-[#efe6b6] bg-[#fffdf2] px-3 py-1 text-xs font-black text-[#001f4d]">
+          Latest {attempts.length}
+        </span>
+      </div>
+
+      {attempts.length === 0 ? (
+        <div className="px-5 py-5 text-sm text-zinc-600">
+          No Google Chat delivery attempts yet.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-zinc-100 text-left text-sm">
+            <thead className="bg-[#fffdf2] text-xs uppercase tracking-[0.1em] text-[#001f4d]/70">
+              <tr>
+                <th className="px-5 py-3">Status</th>
+                <th className="px-5 py-3">Notification</th>
+                <th className="px-5 py-3">Response</th>
+                <th className="px-5 py-3">Attempted</th>
+                <th className="px-5 py-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100">
+              {attempts.map((attempt) => (
+                <tr key={attempt.id}>
+                  <td className="px-5 py-3">
+                    <DeliveryStatusBadge status={attempt.status} />
+                  </td>
+                  <td className="px-5 py-3 font-mono text-xs text-zinc-600">
+                    {attempt.notificationId}
+                  </td>
+                  <td className="max-w-md px-5 py-3 text-zinc-700">
+                    {attempt.responseSummary ?? "No response summary."}
+                  </td>
+                  <td className="px-5 py-3 text-zinc-600">
+                    {formatDateTime(attempt.attemptedAt)}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    {attempt.status === "failed" ||
+                    attempt.status === "skipped" ? (
+                      <form action={retryGoogleChatDeliveryAction}>
+                        <input
+                          type="hidden"
+                          name="notification_id"
+                          value={attempt.notificationId}
+                        />
+                        <input type="hidden" name="return_to" value={returnPath} />
+                        <button className="h-8 rounded-lg border border-[#001f4d]/20 bg-white px-3 text-xs font-black text-[#001f4d] transition hover:bg-[#eef4ff]">
+                          Retry
+                        </button>
+                      </form>
+                    ) : (
+                      <span className="text-xs font-semibold text-zinc-400">
+                        Sent
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function Pagination({
+  currentPage,
+  totalPages,
+  returnPath,
+}: {
+  currentPage: number;
+  totalPages: number;
+  returnPath: string;
+}) {
+  const previousPage = currentPage - 1;
+  const nextPage = currentPage + 1;
+
+  return (
+    <nav
+      aria-label="Notifications pagination"
+      className="flex flex-col items-center justify-between gap-3 rounded-lg border border-[#efe6b6] bg-white px-4 py-3 shadow-sm sm:flex-row"
+    >
+      <PaginationLink
+        href={getPageHref(returnPath, previousPage)}
+        disabled={currentPage === 1}
+      >
+        Previous
+      </PaginationLink>
+      <p className="text-sm font-black text-[#001f4d]">
+        Page {currentPage} of {totalPages}
+      </p>
+      <PaginationLink
+        href={getPageHref(returnPath, nextPage)}
+        disabled={currentPage === totalPages}
+      >
+        Next
+      </PaginationLink>
+    </nav>
+  );
+}
+
+function PaginationLink({
+  href,
+  disabled,
+  children,
+}: {
+  href: string;
+  disabled: boolean;
+  children: React.ReactNode;
+}) {
+  const className =
+    "inline-flex h-9 min-w-24 items-center justify-center rounded-lg border px-3 text-sm font-black transition";
+
+  if (disabled) {
+    return (
+      <span
+        aria-disabled="true"
+        className={`${className} cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400`}
+      >
+        {children}
+      </span>
+    );
+  }
+
+  return (
+    <Link
+      href={href}
+      className={`${className} border-[#cdbf73] bg-white text-[#001f4d] hover:border-[#f2d300] hover:bg-[#fff7bf]`}
+    >
+      {children}
+    </Link>
+  );
+}
+
+function getPageHref(returnPath: string, page: number) {
+  return page <= 1 ? returnPath : `${returnPath}?page=${page}`;
 }
 
 function NotificationItem({
@@ -158,6 +338,26 @@ function SeverityBadge({ severity }: { severity: NotificationSeverity }) {
       className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-black ${SEVERITY_STYLES[severity]}`}
     >
       {formatLabel(severity)}
+    </span>
+  );
+}
+
+function DeliveryStatusBadge({
+  status,
+}: {
+  status: GoogleChatDeliveryAttempt["status"];
+}) {
+  const styles = {
+    sent: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    failed: "border-red-200 bg-red-50 text-red-700",
+    skipped: "border-[#f2d300] bg-[#fff7bf] text-[#001f4d]",
+  } satisfies Record<GoogleChatDeliveryAttempt["status"], string>;
+
+  return (
+    <span
+      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-black ${styles[status]}`}
+    >
+      {formatLabel(status)}
     </span>
   );
 }

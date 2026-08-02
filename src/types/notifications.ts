@@ -45,3 +45,25 @@ export type NotificationRow = {
   read_at: string | null;
   created_at: string;
 };
+
+export type GoogleChatDeliveryAttemptStatus = "skipped" | "sent" | "failed";
+
+export type GoogleChatDeliveryAttemptRow = {
+  id: string;
+  notification_id: string;
+  channel: "google_chat";
+  status: GoogleChatDeliveryAttemptStatus;
+  response_summary: string | null;
+  metadata: Record<string, unknown>;
+  attempted_at: string;
+};
+
+export type GoogleChatDeliveryAttempt = {
+  id: string;
+  notificationId: string;
+  channel: "google_chat";
+  status: GoogleChatDeliveryAttemptStatus;
+  responseSummary: string | null;
+  metadata: Record<string, unknown>;
+  attemptedAt: string;
+};
