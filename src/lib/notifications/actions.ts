@@ -167,7 +167,10 @@ export async function getNotificationsForCurrentUser(options?: {
     .select("id", { count: "exact", head: true })
     .eq("is_read", false);
 
-  if (profile.role !== "admin") {
+  if (profile.role === "admin") {
+    totalCountQuery = totalCountQuery.eq("recipient_role", "admin");
+    unreadCountQuery = unreadCountQuery.eq("recipient_role", "admin");
+  } else {
     totalCountQuery = scopeFilter
       ? totalCountQuery.or(scopeFilter)
       : totalCountQuery.eq("recipient_role", profile.role);
@@ -187,16 +190,20 @@ export async function getNotificationsForCurrentUser(options?: {
     .from("notifications")
     .select("id,recipient_role,recipient_employee_id,category,type,severity,title,message,entity_type,entity_id,metadata,idempotency_key,is_read,read_at,created_at")
     .order("created_at", { ascending: false })
-    .range(rangeStart, rangeStart + pageSize - 1);
+    .range(rangeStart, rangeStart + pageSize * 3 - 1);
 
-  if (profile.role !== "admin") {
+  if (profile.role === "admin") {
+    notificationsQuery = notificationsQuery.eq("recipient_role", "admin");
+  } else {
     notificationsQuery = scopeFilter
       ? notificationsQuery.or(scopeFilter)
       : notificationsQuery.eq("recipient_role", profile.role);
   }
 
   const { data } = await notificationsQuery;
-  const notifications = ((data ?? []) as NotificationRow[]).map(mapNotificationRow);
+  const notifications = dedupeNotificationsForDisplay(
+    ((data ?? []) as NotificationRow[]).map(mapNotificationRow),
+  ).slice(0, pageSize);
 
   return {
     notifications,
@@ -236,7 +243,8 @@ export async function markAllNotificationsReadAction(formData: FormData) {
     await supabase
       .from("notifications")
       .update({ is_read: true, read_at: now })
-      .eq("is_read", false);
+      .eq("is_read", false)
+      .eq("recipient_role", "admin");
   } else {
     const { data: employee } = await supabase
       .from("employees")
@@ -440,6 +448,62 @@ function mapNotificationRow(row: NotificationRow): OperationalNotification {
     readAt: row.read_at,
     createdAt: row.created_at,
   };
+}
+
+function dedupeNotificationsForDisplay(
+  notifications: OperationalNotification[],
+) {
+  const seen = new Set<string>();
+  const deduped: OperationalNotification[] = [];
+
+  for (const notification of notifications) {
+    const key = getNotificationDisplayDedupeKey(notification);
+
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    deduped.push(notification);
+  }
+
+  return deduped;
+}
+
+function getNotificationDisplayDedupeKey(notification: OperationalNotification) {
+  if (notification.category !== "clock_activity") {
+    return notification.id;
+  }
+
+  const metadataEventKey = readMetadataString(notification.metadata, "event_key");
+
+  if (metadataEventKey) {
+    return `clock:${metadataEventKey}`;
+  }
+
+  if (notification.idempotencyKey) {
+    return `clock:${normalizeNotificationAudienceKey(notification.idempotencyKey)}`;
+  }
+
+  return [
+    "clock",
+    notification.type,
+    notification.entityId ?? "no-entity",
+    readMetadataString(notification.metadata, "employee_id") ?? "no-employee",
+    readMetadataString(notification.metadata, "clock_event_at") ??
+      notification.createdAt.slice(0, 16),
+    notification.message,
+  ].join(":");
+}
+
+function normalizeNotificationAudienceKey(idempotencyKey: string) {
+  return idempotencyKey
+    .replace(/^admin:/, "")
+    .replace(/^manager:[0-9a-f-]+:/i, "");
+}
+
+function readMetadataString(metadata: Record<string, unknown>, key: string) {
+  const value = metadata[key];
+
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function mapGoogleChatDeliveryAttemptRow(

@@ -88,6 +88,13 @@ async function notifyClockEvent(profileId: string, rpcName: ClockRpcName) {
     readClockEventTimestamp(rpcName, session, actionCompletedAt) ??
     actionCompletedAt;
   const timestampBucket = new Date().toISOString().slice(0, 16);
+  const eventKey = buildClockNotificationEventKey({
+    rpcName,
+    employeeId: (employee as { id: string }).id,
+    sessionId: session?.id,
+    eventAt,
+    timestampBucket,
+  });
 
   await notifyAdminsAndEmployeeManager((employee as { id: string }).id, {
     category: "clock_activity",
@@ -102,9 +109,32 @@ async function notifyClockEvent(profileId: string, rpcName: ClockRpcName) {
       clock_event_at: eventAt,
       flags,
       timestamp_bucket: timestampBucket,
+      event_key: eventKey,
     },
-    idempotencyKey: `clock:${rpcName}:${(employee as { id: string }).id}:${timestampBucket}`,
+    idempotencyKey: eventKey,
   });
+}
+
+function buildClockNotificationEventKey({
+  rpcName,
+  employeeId,
+  sessionId,
+  eventAt,
+  timestampBucket,
+}: {
+  rpcName: ClockRpcName;
+  employeeId: string;
+  sessionId: string | undefined;
+  eventAt: string;
+  timestampBucket: string;
+}) {
+  return [
+    "clock",
+    rpcName,
+    employeeId,
+    sessionId ?? "no-session",
+    eventAt || timestampBucket,
+  ].join(":");
 }
 
 async function getLatestClockSessionForEmployee(employeeId: string) {
