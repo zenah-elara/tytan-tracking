@@ -100,6 +100,7 @@ type PayrollDay = {
   hasRoster: boolean;
   hasSchedule: boolean;
   isExpectedPayable: boolean;
+  isCountedPayable: boolean;
   completedLogsCount: number;
   openLogsCount: number;
   missingClockOutCount: number;
@@ -124,6 +125,8 @@ type PayrollCrewGroup = {
   restDayCompletedLogsCount: number;
   leaveDayCompletedLogsCount: number;
   expectedPayableDaysCount: number;
+  countedPayableDaysCount: number;
+  scheduledNetMinutesPerDay: number;
   noRosterDatesCount: number;
   noScheduleDatesCount: number;
 };
@@ -133,7 +136,9 @@ type NormalizedSearchParams = {
   to: string;
   month: string;
   cutoff: PayrollCutoff;
+  asOfDate: string;
   payableDates: string[];
+  countedPayableDates: string[];
 };
 
 type PayrollCutoff = "first_half" | "second_half";
@@ -279,18 +284,29 @@ export async function PayrollReportPage({
 
       <PayrollFilters range={range} />
 
-      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
         <SummaryCard label="Pay period" value={`${range.from} to ${range.to}`} />
         <SummaryCard
           label="Payroll cutoff"
           value={PAYROLL_CUTOFF_LABELS[range.cutoff]}
         />
+        <SummaryCard label="As of date" value={range.asOfDate} />
         <SummaryCard
           label="Expected payable days"
           value={String(range.payableDates.length)}
         />
+        <SummaryCard
+          label="Counted payable days"
+          value={String(range.countedPayableDates.length)}
+        />
+      </section>
+
+      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
         <SummaryCard label="Crew with hours" value={String(crewWithHours)} />
-        <SummaryCard label="Payroll hours" value={formatHours(totalPayrollMinutes)} />
+        <SummaryCard
+          label="Payroll hours to date"
+          value={formatHours(totalPayrollMinutes)}
+        />
       </section>
 
       <section className="rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
@@ -301,7 +317,11 @@ export async function PayrollReportPage({
           {range.payableDates.map((date) => (
             <span
               key={date}
-              className="inline-flex rounded-full border border-[#efe6b6] bg-[#fffdf2] px-3 py-1 text-xs font-black text-[#001f4d]"
+              className={`inline-flex rounded-full border px-3 py-1 text-xs font-black ${
+                range.countedPayableDates.includes(date)
+                  ? "border-[#efe6b6] bg-[#fffdf2] text-[#001f4d]"
+                  : "border-zinc-200 bg-zinc-50 text-zinc-500"
+              }`}
             >
               {formatPayrollDateHeader(date)}
             </span>
@@ -345,6 +365,7 @@ export async function PayrollReportPage({
                       {formatHours(group.totalRenderedMinutes)}
                     </td>
                     <td className="px-5 py-4 text-zinc-600">
+                      {group.countedPayableDaysCount} counted of{" "}
                       {group.expectedPayableDaysCount} expected day
                       {group.expectedPayableDaysCount === 1 ? "" : "s"}
                       <span className="mt-1 block text-xs text-zinc-500">
@@ -463,6 +484,7 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
           <h2 className="text-base font-black text-[#001f4d]">{group.employeeName}</h2>
           <p className="mt-1 text-xs text-zinc-500">
             {group.departmentName} · {formatHours(group.totalRenderedMinutes)} ·{" "}
+            {group.countedPayableDaysCount} counted of{" "}
             {group.expectedPayableDaysCount} expected payable day
             {group.expectedPayableDaysCount === 1 ? "" : "s"} ·{" "}
             {formatDecimalHours(getGroupScheduledNetMinutes(group))} scheduled net/day ·{" "}
@@ -514,7 +536,9 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
                   {formatHours(day.payrollMinutes)}
                 </td>
                 <td className="px-5 py-4 text-zinc-600">
-                  Payable workday
+                  {day.isCountedPayable
+                    ? "Counted payable workday"
+                    : "Future payable workday"}
                 </td>
                 <td className="px-5 py-4 text-zinc-600">{day.leaveLabel}</td>
                 <td className="px-5 py-4 text-zinc-600">{day.dayOffLabel}</td>
@@ -683,6 +707,8 @@ function createPayrollGroup(
     restDayCompletedLogsCount: 0,
     leaveDayCompletedLogsCount: 0,
     expectedPayableDaysCount: 0,
+    countedPayableDaysCount: 0,
+    scheduledNetMinutesPerDay: 0,
     noRosterDatesCount: 0,
     noScheduleDatesCount: 0,
   };
@@ -779,6 +805,8 @@ function applyDailyPayrollTotals({
   group.restDayCompletedLogsCount = 0;
   group.leaveDayCompletedLogsCount = 0;
   group.expectedPayableDaysCount = 0;
+  group.countedPayableDaysCount = 0;
+  group.scheduledNetMinutesPerDay = 0;
   group.noRosterDatesCount = 0;
   group.noScheduleDatesCount = 0;
   const scheduledNetMinutes = getScheduledNetMinutesForPeriod(
@@ -788,7 +816,9 @@ function applyDailyPayrollTotals({
     scheduleMap,
   );
   group.expectedPayableDaysCount = range.payableDates.length;
-  group.totalRenderedMinutes = range.payableDates.length * scheduledNetMinutes;
+  group.countedPayableDaysCount = range.countedPayableDates.length;
+  group.scheduledNetMinutesPerDay = scheduledNetMinutes;
+  group.totalRenderedMinutes = range.countedPayableDates.length * scheduledNetMinutes;
 
   for (const [workdate, bucket] of [...dailyBuckets.entries()].sort(([first], [second]) =>
     first.localeCompare(second),
@@ -813,7 +843,8 @@ function applyDailyPayrollTotals({
     const hasRoster = hasPayrollMonthRoster(group.employeeId, workdate, dayOffRosters);
     const hasSchedule = Boolean(schedule);
     const isExpectedPayable = true;
-    const payrollMinutes = scheduledNetMinutes;
+    const isCountedPayable = range.countedPayableDates.includes(workdate);
+    const payrollMinutes = isCountedPayable ? scheduledNetMinutes : 0;
     const duplicateCompletedLogsCount = Math.max(0, bucket.completedLogsCount - 1);
 
     if (!hasSchedule) {
@@ -849,6 +880,7 @@ function applyDailyPayrollTotals({
       hasRoster,
       hasSchedule,
       isExpectedPayable,
+      isCountedPayable,
       completedLogsCount: bucket.completedLogsCount,
       openLogsCount: bucket.openLogsCount,
       missingClockOutCount: bucket.missingClockOutCount,
@@ -872,7 +904,7 @@ function getScheduledNetMinutesForPeriod(
 ) {
   const scheduledMinutes = [
     ...new Set(
-      getOperationalDatesInRange(range)
+      range.payableDates
         .map((workdate) =>
           getDailyCapMinutes(
             findScheduleForEmployeeDate(
@@ -988,9 +1020,7 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
 }
 
 function getGroupScheduledNetMinutes(group: PayrollCrewGroup) {
-  if (group.expectedPayableDaysCount <= 0) return 0;
-
-  return group.totalRenderedMinutes / group.expectedPayableDaysCount;
+  return group.scheduledNetMinutesPerDay;
 }
 
 function getOperationalDatesInRange(range: { from: string; to: string }) {
@@ -1123,7 +1153,10 @@ function getDayStatusNote(day: PayrollDay) {
   if (!day.hasSchedule) {
     notes.push("No schedule configured");
   }
-  if (day.isExpectedPayable && day.completedLogsCount === 0) {
+  if (!day.isCountedPayable) {
+    notes.push("Future payable date; not counted yet");
+  }
+  if (day.isCountedPayable && day.completedLogsCount === 0) {
     notes.push("Expected payable day; missing completed clock record");
   }
 
@@ -1163,7 +1196,9 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
     return [
       group.employeeName,
       formatDecimalHours(group.totalRenderedMinutes),
-      ...range.payableDates.map(() => dailyHours),
+      ...range.payableDates.map((date) =>
+        range.countedPayableDates.includes(date) ? dailyHours : "",
+      ),
     ];
   });
   const csv = [headers, ...rows]
@@ -1178,12 +1213,16 @@ function withDefaultRange(searchParams: PayrollReportSearchParams): NormalizedSe
   const month = normalizePayrollMonth(searchParams.month) ?? today.slice(0, 7);
   const cutoff = normalizePayrollCutoff(searchParams.cutoff);
   const range = getPayrollPeriodDates(month, cutoff);
+  const payableDates = getExpectedPayableDates(range.from, range.to);
+  const asOfDate = today;
 
   return {
     ...range,
     month,
     cutoff,
-    payableDates: getExpectedPayableDates(range.from, range.to),
+    asOfDate,
+    payableDates,
+    countedPayableDates: getCountedPayableDates(payableDates, asOfDate),
   };
 }
 
@@ -1209,6 +1248,10 @@ function getExpectedPayableDates(periodStart: string, periodEnd: string) {
   return getOperationalDatesInRange({ from: periodStart, to: periodEnd }).filter(
     (date) => !isWeekend(date),
   );
+}
+
+function getCountedPayableDates(expectedPayableDates: string[], asOfDate: string) {
+  return expectedPayableDates.filter((date) => date <= asOfDate);
 }
 
 function getLastDayOfMonth(month: string) {
