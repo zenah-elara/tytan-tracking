@@ -6,6 +6,7 @@ import type {
   ClockSessionStatus,
 } from "@/types/clock";
 import {
+  getCompletedCreditedClockMinutes,
   getCreditedClockMinutes,
   getRenderedGrossMinutes,
   isCurrentOpenClockSession,
@@ -1477,7 +1478,8 @@ function getGroupSummary(sessions: EnrichedClockSession[]) {
       (session) => session.attendanceStatus === "needs_review",
     ).length,
     netMinutes: sessions.reduce(
-      (total, session) => total + getCreditedClockMinutes(session, session.schedule),
+      (total, session) =>
+        total + getCompletedCreditedClockMinutes(session, session.schedule),
       0,
     ),
   };
@@ -1663,7 +1665,7 @@ function buildCsvHref(sessions: EnrichedClockSession[], mode: RecordsMode) {
           session.clockoutat ? formatDateTime(session.clockoutat) : "",
           String(getRenderedGrossMinutes(session, session.schedule)),
           String(session.breakminutes),
-          String(getCreditedClockMinutes(session, session.schedule)),
+          String(getCompletedCreditedClockMinutes(session, session.schedule)),
           formatLabel(session.status),
           session.flags.join("; "),
           session.adminReviewNotes ?? session.notes ?? "",
@@ -1677,7 +1679,7 @@ function buildCsvHref(sessions: EnrichedClockSession[], mode: RecordsMode) {
           session.clockoutat ? formatDateTime(session.clockoutat) : "",
           String(getRenderedGrossMinutes(session, session.schedule)),
           String(session.breakminutes),
-          String(getCreditedClockMinutes(session, session.schedule)),
+          String(getCompletedCreditedClockMinutes(session, session.schedule)),
           getLeaveCsvValue(session),
           formatAttendanceStatus(session.attendanceStatus),
           session.flags.join("; "),
@@ -1950,7 +1952,7 @@ function formatWorkedMinutes(session: EnrichedClockSession) {
   if (isOngoingSession(session, session.schedule) && !session.clockoutat) {
     return "In progress";
   }
-  return formatMinutes(getCreditedClockMinutes(session, session.schedule));
+  return formatMinutes(getCompletedCreditedClockMinutes(session, session.schedule));
 }
 
 function formatGrossMinutes(session: EnrichedClockSession) {

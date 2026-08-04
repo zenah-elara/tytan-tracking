@@ -3,7 +3,10 @@ import {
   getCreditedClockMinutes,
   getExpectedScheduledShiftMinutes,
   getRenderedGrossMinutes,
+  getScheduledDateTime,
   MAX_CREDITED_SHIFT_MINUTES,
+  normalizeTime,
+  STALE_OPEN_SESSION_GRACE_MINUTES,
 } from "@/lib/clock/duration";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
 import { createClient } from "@/lib/supabase/server";
@@ -165,13 +168,22 @@ export async function PayrollReportPage({
   await connection();
 
   const supabase = await createClient();
-  const range = withDefaultRange(searchParams);
+  const { data: scheduleData } = await supabase
+    .from("work_schedules")
+    .select("id,name,shift_start,shift_end");
+  const schedules = (scheduleData ?? []) as WorkScheduleRow[];
+  const scheduleMap = new Map(
+    schedules.map((schedule) => [
+      schedule.id,
+      schedule,
+    ]),
+  );
+  const range = withDefaultRange(searchParams, schedules);
   const [
     { data: sessionData, error },
     { data: employeeData },
     { data: departmentData },
     { data: scheduleAssignmentData },
-    { data: scheduleData },
     { data: leaveData },
     { data: leaveTypeData },
     { data: dayOffData },
@@ -193,7 +205,6 @@ export async function PayrollReportPage({
       .from("employee_schedule_assignments")
       .select("employee_id,schedule_id,effective_from,effective_to,is_primary")
       .order("effective_from", { ascending: false }),
-    supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
     supabase
       .from("leave_requests")
       .select("employee_id,leave_type_id,start_date,end_date")
@@ -217,12 +228,6 @@ export async function PayrollReportPage({
     ]),
   );
   const scheduleAssignments = (scheduleAssignmentData ?? []) as ScheduleAssignmentRow[];
-  const scheduleMap = new Map(
-    ((scheduleData ?? []) as WorkScheduleRow[]).map((schedule) => [
-      schedule.id,
-      schedule,
-    ]),
-  );
   const leaveTypes = (leaveTypeData ?? []) as LeaveTypeRow[];
   const leaveTypeMap = new Map(leaveTypes.map((leaveType) => [leaveType.id, leaveType.name]));
   const approvedLeaves = ((leaveData ?? []) as LeaveRequestRow[]).filter((request) =>
@@ -290,7 +295,7 @@ export async function PayrollReportPage({
           label="Payroll cutoff"
           value={PAYROLL_CUTOFF_LABELS[range.cutoff]}
         />
-        <SummaryCard label="As of date" value={range.asOfDate} />
+        <SummaryCard label="Completed through" value={range.asOfDate} />
         <SummaryCard
           label="Expected payable days"
           value={String(range.payableDates.length)}
@@ -538,7 +543,7 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
                 <td className="px-5 py-4 text-zinc-600">
                   {day.isCountedPayable
                     ? "Counted payable workday"
-                    : "Future payable workday"}
+                    : "Not completed yet"}
                 </td>
                 <td className="px-5 py-4 text-zinc-600">{day.leaveLabel}</td>
                 <td className="px-5 py-4 text-zinc-600">{day.dayOffLabel}</td>
@@ -1154,7 +1159,7 @@ function getDayStatusNote(day: PayrollDay) {
     notes.push("No schedule configured");
   }
   if (!day.isCountedPayable) {
-    notes.push("Future payable date; not counted yet");
+    notes.push("Payable date not completed yet; not counted");
   }
   if (day.isCountedPayable && day.completedLogsCount === 0) {
     notes.push("Expected payable day; missing completed clock record");
@@ -1208,13 +1213,16 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
   return `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
 }
 
-function withDefaultRange(searchParams: PayrollReportSearchParams): NormalizedSearchParams {
+function withDefaultRange(
+  searchParams: PayrollReportSearchParams,
+  schedules: WorkScheduleRow[],
+): NormalizedSearchParams {
   const today = getManilaDateString(new Date());
   const month = normalizePayrollMonth(searchParams.month) ?? today.slice(0, 7);
   const cutoff = normalizePayrollCutoff(searchParams.cutoff);
   const range = getPayrollPeriodDates(month, cutoff);
   const payableDates = getExpectedPayableDates(range.from, range.to);
-  const asOfDate = today;
+  const asOfDate = getCompletedOperationalPayrollDate(schedules);
 
   return {
     ...range,
@@ -1252,6 +1260,30 @@ function getExpectedPayableDates(periodStart: string, periodEnd: string) {
 
 function getCountedPayableDates(expectedPayableDates: string[], asOfDate: string) {
   return expectedPayableDates.filter((date) => date <= asOfDate);
+}
+
+function getCompletedOperationalPayrollDate(schedules: WorkScheduleRow[], now = new Date()) {
+  return addDays(getCurrentPayrollOperationalDate(schedules, now), -1);
+}
+
+function getCurrentPayrollOperationalDate(schedules: WorkScheduleRow[], now = new Date()) {
+  const today = getManilaDateString(now);
+  const previousDate = addDays(today, -1);
+  const nowTime = now.getTime();
+  const isWithinActiveOvernightShift = schedules.some((schedule) => {
+    if (normalizeTime(schedule.shift_end) > normalizeTime(schedule.shift_start)) {
+      return false;
+    }
+
+    const scheduledStart = getScheduledDateTime(previousDate, schedule.shift_start);
+    const scheduledEnd = getScheduledDateTime(today, schedule.shift_end);
+    const cutoff =
+      scheduledEnd.getTime() + STALE_OPEN_SESSION_GRACE_MINUTES * 60 * 1000;
+
+    return nowTime >= scheduledStart.getTime() && nowTime <= cutoff;
+  });
+
+  return isWithinActiveOvernightShift ? previousDate : today;
 }
 
 function getLastDayOfMonth(month: string) {

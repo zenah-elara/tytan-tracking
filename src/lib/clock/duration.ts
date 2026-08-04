@@ -34,6 +34,20 @@ export function getCreditedClockMinutes(
   return Math.min(netMinutes, creditedCapMinutes);
 }
 
+export function getCompletedCreditedClockMinutes(
+  session: ClockDurationSession,
+  schedule: ClockDurationSchedule,
+  now = new Date(),
+) {
+  return isCompletedClockSession(session)
+    ? getCreditedClockMinutes(session, schedule, now)
+    : 0;
+}
+
+export function isCompletedClockSession(session: ClockDurationSession) {
+  return session.status === "completed" && Boolean(session.clockoutat);
+}
+
 export function getRenderedGrossMinutes(
   session: ClockDurationSession,
   schedule: ClockDurationSchedule,
