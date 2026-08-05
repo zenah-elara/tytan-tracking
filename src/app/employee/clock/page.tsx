@@ -5,9 +5,8 @@ import {
   startBreakAction,
 } from "@/lib/clock/actions";
 import {
-  getCreditedClockMinutes,
+  getCompletedCreditedClockMinutes,
   getRenderedGrossMinutes,
-  isStaleOpenClockSession,
   STALE_OPEN_SESSION_GRACE_MINUTES,
 } from "@/lib/clock/duration";
 import { getCurrentUserProfile } from "@/lib/auth/session";
@@ -129,14 +128,11 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
   );
   const operationalDate = getEmployeeOperationalDate(defaultSchedule);
   const openSession =
-    ((openSessionData ?? []) as ClockSessionRow[]).find((session) => {
-      const schedule = findScheduleForSession(
-        session,
-        scheduleAssignments,
-        schedules,
-      );
-      return !isStaleOpenClockSession(session, schedule);
-    }) ?? null;
+    ((openSessionData ?? []) as ClockSessionRow[]).find(
+      (session) =>
+        !session.clockoutat &&
+        (session.status === "active" || session.status === "on_break"),
+    ) ?? null;
   const operationalSessions = ((todaySessionData ?? []) as ClockSessionRow[]).filter(
     (session) => session.workdate === operationalDate,
   );
@@ -241,7 +237,7 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
             ) : null}
             {currentSession?.status === "on_break" ? (
               <p className="mt-2 text-sm text-zinc-600">
-                End your break before clocking out.
+                You can resume work or clock out from this open break.
               </p>
             ) : null}
           </div>
@@ -274,7 +270,7 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
               <MetricCard
                 label="Break / Net worked"
                 value={`${formatMinutes(currentSession.breakminutes)} / ${formatMinutes(
-                  getCreditedClockMinutes(currentSession, currentSchedule),
+                  getCompletedCreditedClockMinutes(currentSession, currentSchedule),
                 )}`}
               />
             </div>
@@ -319,7 +315,10 @@ function ClockActions({
           </>
         ) : null}
         {status === "on_break" ? (
-          <ClockButton action={endBreakAction} label="Resume Work" variant="start" />
+          <>
+            <ClockButton action={endBreakAction} label="Resume Work" variant="start" />
+            <ClockButton action={clockOutAction} label="Clock Out" variant="primary" />
+          </>
         ) : null}
       </div>
       <p className={`max-w-sm text-sm font-semibold ${getActionHelperClassName(state)}`}>
@@ -506,7 +505,7 @@ function getClockStateConfig(state: ClockUiState) {
 function getActionHelperText(state: ClockUiState) {
   if (state === "not_clocked_in") return "Use Clock In to start your shift.";
   if (state === "active") return "Your shift is active. Start a break if needed, or clock out when your shift is complete.";
-  if (state === "on_break") return "Resume work when your break is finished.";
+  if (state === "on_break") return "Resume work when your break is finished, or clock out if your shift is done.";
   if (state === "completed") return "Your shift is complete. Start a new session only if you need to clock in again.";
   return "Start a new session when you are ready to work.";
 }

@@ -4,9 +4,8 @@ import {
 } from "@/components/dashboard/availability-section";
 import { CompanyAnnouncementCard } from "@/components/dashboard/company-announcement-card";
 import {
-  getCreditedClockMinutes,
+  getCompletedCreditedClockMinutes,
   getRenderedGrossMinutes,
-  isStaleOpenClockSession,
 } from "@/lib/clock/duration";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
@@ -162,8 +161,7 @@ export default async function EmployeePage() {
     sessions.find(
       (session) =>
         !session.clockoutat &&
-        ["active", "on_break"].includes(session.status) &&
-        !isStaleOpenClockSession(session, schedule),
+        ["active", "on_break"].includes(session.status),
     ) ?? null;
   const todaysSessions = sessions.filter((session) => session.workdate === today);
   const currentSession =
@@ -226,7 +224,7 @@ export default async function EmployeePage() {
           label="Net worked"
           value={
             currentSession
-              ? formatMinutes(getCreditedClockMinutes(currentSession, schedule))
+              ? formatMinutes(getCompletedCreditedClockMinutes(currentSession, schedule))
               : "0h 0m"
           }
         />
@@ -340,7 +338,7 @@ export default async function EmployeePage() {
                 </div>
                 <div className="text-right text-xs text-zinc-600">
                   <p className="font-bold text-[#001f4d]">
-                    {formatMinutes(getCreditedClockMinutes(session, findCurrentSchedule(scheduleAssignments, schedules)))}
+                    {formatMinutes(getCompletedCreditedClockMinutes(session, findCurrentSchedule(scheduleAssignments, schedules)))}
                   </p>
                   <p className="mt-1">{formatLabel(session.status)}</p>
                 </div>

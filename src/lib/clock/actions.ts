@@ -27,6 +27,13 @@ type WorkScheduleNotificationRow = {
   shift_end: string;
 };
 
+type OpenClockSessionRow = {
+  id: string;
+  status: "active" | "on_break";
+};
+
+type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
+
 export async function clockInAction() {
   await runClockRpc("clock_in", "clocked-in");
 }
@@ -51,6 +58,20 @@ async function runClockRpc(rpcName: ClockRpcName, success: string) {
   }
 
   const supabase = await createClient();
+  const openSession = await getOpenClockSessionForProfile(supabase, profile.id);
+
+  if (rpcName === "clock_in" && openSession) {
+    redirectWithStatus("error", "already-clocked-in");
+  }
+
+  if (rpcName === "clock_out" && openSession?.status === "on_break") {
+    const { error: endBreakError } = await supabase.rpc("end_break");
+
+    if (endBreakError) {
+      redirectWithStatus("error", mapClockError(endBreakError.message));
+    }
+  }
+
   const { error } = await supabase.rpc(rpcName);
 
   if (error) {
@@ -63,6 +84,32 @@ async function runClockRpc(rpcName: ClockRpcName, success: string) {
   revalidatePath(MANAGER_CLOCK_RECORDS_PATH);
   revalidatePath(ADMIN_CLOCK_RECORDS_PATH);
   redirectWithStatus("success", success);
+}
+
+async function getOpenClockSessionForProfile(
+  supabase: SupabaseServerClient,
+  profileId: string,
+) {
+  const { data: employee } = await supabase
+    .from("employees")
+    .select("id")
+    .eq("profile_id", profileId)
+    .maybeSingle();
+  const employeeId = (employee as { id?: string } | null)?.id;
+
+  if (!employeeId) return null;
+
+  const { data: session } = await supabase
+    .from("clock_sessions")
+    .select("id,status")
+    .eq("employeeid", employeeId)
+    .is("clockoutat", null)
+    .in("status", ["active", "on_break"])
+    .order("clockinat", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return (session ?? null) as OpenClockSessionRow | null;
 }
 
 async function notifyClockEvent(profileId: string, rpcName: ClockRpcName) {

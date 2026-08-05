@@ -5,6 +5,7 @@ import type {
   ClockSessionStatus,
 } from "@/types/clock";
 import {
+  getCompletedCreditedClockMinutes,
   getCreditedClockMinutes,
   getRenderedGrossMinutes,
   isCurrentOpenClockSession,
@@ -699,7 +700,7 @@ function buildRecordForDate({
     clockStatus: session?.status ?? null,
     grossMinutes: session ? getRenderedGrossMinutes(session, schedule) : 0,
     breakMinutes: Number(session?.breakminutes ?? 0),
-    netMinutes: session ? getCreditedClockMinutes(session, schedule) : 0,
+    netMinutes: session ? getCompletedCreditedClockMinutes(session, schedule) : 0,
     leaveLabel,
     dayOffLabel,
     flags,
