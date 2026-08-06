@@ -45,6 +45,12 @@ const BALANCE_BUCKET_BY_REQUEST_TYPE: Record<string, string> = {
   "Floating Leave": "Floating Leave",
 };
 const DUPLICATE_REQUEST_WINDOW_MS = 2 * 60 * 1000;
+const SUPERVISOR_EXEMPT_JOB_TITLE_KEYWORDS = [
+  "lead",
+  "manager",
+  "supervisor",
+  "head",
+];
 
 type BalanceAdjustmentResult = {
   ok: true;
@@ -72,6 +78,12 @@ type LeaveBalanceContext = {
   balanceType: { id: string; name: string };
   year: number;
   balance: { balance: number; used: number; pending: number } | null;
+};
+type CurrentEmployee = {
+  id: string;
+  full_name: string;
+  work_email: string;
+  role: string;
 };
 
 export type LeaveRequestSubmitState = {
@@ -575,6 +587,7 @@ export async function submitLeaveRequestAction(formData: FormData) {
     redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "invalid-leave-type");
   }
 
+  const initialStatus = await getInitialLeaveRequestStatus(employee);
   const { data: request, error } = await supabase
     .from("leave_requests")
     .insert({
@@ -584,7 +597,7 @@ export async function submitLeaveRequestAction(formData: FormData) {
       end_date: endDate,
       total_hours: requestedHours,
       reason,
-      status: "pending_supervisor",
+      status: initialStatus,
     })
     .select("id")
     .maybeSingle();
@@ -626,6 +639,7 @@ export async function submitLeaveRequestAction(formData: FormData) {
     requestId,
     metadata: {
       leave_type: leaveType.name,
+      initial_status: initialStatus,
       start_date: startDate,
       end_date: endDate,
       requested_hours: requestedHours,
@@ -723,6 +737,7 @@ export async function submitLeaveRequestFormAction(
     };
   }
 
+  const initialStatus = await getInitialLeaveRequestStatus(employee);
   const { data: request, error } = await supabase
     .from("leave_requests")
     .insert({
@@ -732,7 +747,7 @@ export async function submitLeaveRequestFormAction(
       end_date: endDate,
       total_hours: requestedHours,
       reason,
-      status: "pending_supervisor",
+      status: initialStatus,
     })
     .select("id")
     .maybeSingle();
@@ -783,6 +798,7 @@ export async function submitLeaveRequestFormAction(
     requestId,
     metadata: {
       leave_type: leaveType.name,
+      initial_status: initialStatus,
       start_date: startDate,
       end_date: endDate,
       requested_hours: requestedHours,
@@ -1496,6 +1512,59 @@ async function getCurrentEmployee() {
     ...(data as { id: string; full_name: string; work_email: string }),
     role: profile.role,
   };
+}
+
+async function getInitialLeaveRequestStatus(
+  employee: CurrentEmployee,
+): Promise<LeaveRequestStatus> {
+  if (employee.role === "manager" || employee.role === "admin") {
+    return "pending_admin";
+  }
+
+  const leadershipContext = await getEmployeeLeadershipContext(employee.id);
+
+  return leadershipContext.isSupervisorExempt ? "pending_admin" : "pending_supervisor";
+}
+
+async function getEmployeeLeadershipContext(employeeId: string) {
+  const fallback = { isSupervisorExempt: false };
+
+  try {
+    const supabase = createAdminClient();
+    const [{ data: employee }, { count: directReportCount }] = await Promise.all([
+      supabase
+        .from("employees")
+        .select("id,job_roles(title)")
+        .eq("id", employeeId)
+        .maybeSingle(),
+      supabase
+        .from("employees")
+        .select("id", { count: "exact", head: true })
+        .eq("manager_id", employeeId),
+    ]);
+    const jobRoleTitle = getEmployeeJobRoleTitle(employee);
+    const hasLeadershipTitle = SUPERVISOR_EXEMPT_JOB_TITLE_KEYWORDS.some(
+      (keyword) => jobRoleTitle.includes(keyword),
+    );
+
+    return {
+      isSupervisorExempt: Boolean((directReportCount ?? 0) > 0 || hasLeadershipTitle),
+    };
+  } catch (error) {
+    console.warn("Leave initial status leadership lookup failed", {
+      employeeId,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    return fallback;
+  }
+}
+
+function getEmployeeJobRoleTitle(employee: unknown) {
+  const jobRoles = (employee as { job_roles?: { title?: string } | { title?: string }[] } | null)
+    ?.job_roles;
+  const title = Array.isArray(jobRoles) ? jobRoles[0]?.title : jobRoles?.title;
+
+  return normalizeLeaveTypeName(title ?? "");
 }
 
 async function notifyLeaveEvent(
