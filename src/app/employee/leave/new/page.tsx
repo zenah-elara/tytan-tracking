@@ -74,6 +74,18 @@ function getErrorMessage(error: string) {
     return "Your leave request was not submitted because the balance could not be reserved. Please try again or contact an administrator.";
   }
 
+  if (error === "balance-missing-row") {
+    return "Your leave request was not submitted because no matching leave balance was found for that leave type and year. Please contact an administrator.";
+  }
+
+  if (error === "balance-insufficient") {
+    return "Your leave request was not submitted because the requested hours exceed your available balance.";
+  }
+
+  if (error === "balance-type-missing") {
+    return "Your leave request was not submitted because that leave type is not linked to a balance bucket. Please contact an administrator.";
+  }
+
   if (error === "balance-cleanup-failed") {
     return "Your leave request needs admin review because the balance could not be reserved and the pending request could not be cleaned up.";
   }

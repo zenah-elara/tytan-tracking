@@ -9,6 +9,7 @@ import {
 } from "@/lib/employees/filters";
 import { canSupervisorApproveLeaveForEmployee } from "@/lib/leave/approval-scope";
 import { notifyAdminsAndEmployeeManager } from "@/lib/notifications/actions";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { LeavePolicyType, LeaveRequestStatus } from "@/types/leave";
 
@@ -54,6 +55,23 @@ type BalanceAdjustmentResult = {
 } | {
   ok: false;
   reason: "missing-bucket" | "balance-save-failed";
+};
+type BalanceReservationFailureReason =
+  | "missing-bucket"
+  | "missing-balance-type"
+  | "missing-balance-row"
+  | "insufficient-balance"
+  | "balance-save-failed";
+type BalanceReservationResult = {
+  ok: true;
+} | {
+  ok: false;
+  reason: BalanceReservationFailureReason;
+};
+type LeaveBalanceContext = {
+  balanceType: { id: string; name: string };
+  year: number;
+  balance: { balance: number; used: number; pending: number } | null;
 };
 
 export type LeaveRequestSubmitState = {
@@ -588,7 +606,7 @@ export async function submitLeaveRequestAction(formData: FormData) {
     requestedHours,
   });
 
-  if (!reserved) {
+  if (!reserved.ok) {
     const cleanedUp = await deleteUnreservedLeaveRequest({
       requestId,
       employeeId: employee.id,
@@ -596,7 +614,7 @@ export async function submitLeaveRequestAction(formData: FormData) {
     redirectWithStatus(
       EMPLOYEE_NEW_LEAVE_PATH,
       "error",
-      cleanedUp ? "balance-reserve-failed" : "balance-cleanup-failed",
+      cleanedUp ? getBalanceReservationErrorCode(reserved.reason) : "balance-cleanup-failed",
     );
   }
 
@@ -742,17 +760,18 @@ export async function submitLeaveRequestFormAction(
     requestedHours,
   });
 
-  if (!reserved) {
+  if (!reserved.ok) {
     const cleanedUp = await deleteUnreservedLeaveRequest({
       requestId,
       employeeId: employee.id,
     });
+    const message = cleanedUp
+      ? getBalanceReservationErrorMessage(reserved.reason)
+      : "Your leave request needs admin review because the balance could not be reserved and the pending request could not be cleaned up.";
 
     return {
       status: "error",
-      message: cleanedUp
-        ? "Your leave request was not submitted because the balance could not be reserved. Please try again or contact an administrator."
-        : "Your leave request needs admin review because the balance could not be reserved and the pending request could not be cleaned up.",
+      message,
     };
   }
 
@@ -1014,26 +1033,163 @@ async function reservePendingLeaveHours({
   requestLeaveTypeName: string;
   startDate: string;
   requestedHours: number;
-}) {
+}): Promise<BalanceReservationResult> {
   const balanceContext = await getLeaveBalanceContext({
     employeeId,
     requestLeaveTypeName,
     startDate,
   });
 
-  if (!balanceContext) return false;
+  if (!balanceContext) {
+    logLeaveBalanceReservationFailure("missing-bucket", {
+      employeeId,
+      requestLeaveTypeName,
+      startDate,
+      requestedHours,
+    });
+    return { ok: false, reason: "missing-bucket" };
+  }
 
   const { balanceType, year, balance } = balanceContext;
-  const nextPending = Number(balance?.pending ?? 0) + requestedHours;
+  if (!balance) {
+    logLeaveBalanceReservationFailure("missing-balance-row", {
+      employeeId,
+      requestLeaveTypeName,
+      balanceBucket: balanceType.name,
+      year,
+      requestedHours,
+    });
+    return { ok: false, reason: "missing-balance-row" };
+  }
 
-  return upsertLeaveBalanceSnapshot({
+  const balanceHours = Number(balance.balance ?? 0);
+  const usedHours = Number(balance.used ?? 0);
+  const pendingHours = Number(balance.pending ?? 0);
+  const availableHours = Math.max(0, balanceHours - usedHours - pendingHours);
+
+  if (availableHours < requestedHours) {
+    logLeaveBalanceReservationFailure("insufficient-balance", {
+      employeeId,
+      requestLeaveTypeName,
+      balanceBucket: balanceType.name,
+      year,
+      requestedHours,
+      availableHours,
+    });
+    return { ok: false, reason: "insufficient-balance" };
+  }
+
+  const nextPending = Number(balance?.pending ?? 0) + requestedHours;
+  const saved = await upsertLeaveBalanceSnapshot({
     employeeId,
     leaveTypeId: balanceType.id,
     year,
-    balance: Number(balance?.balance ?? 0),
-    used: Number(balance?.used ?? 0),
+    balance: balanceHours,
+    used: usedHours,
     pending: nextPending,
   });
+
+  if (!saved) {
+    logLeaveBalanceReservationFailure("balance-save-failed", {
+      employeeId,
+      requestLeaveTypeName,
+      balanceBucket: balanceType.name,
+      year,
+      requestedHours,
+    });
+    return { ok: false, reason: "balance-save-failed" };
+  }
+
+  return { ok: true };
+}
+
+function getBalanceReservationErrorCode(reason: BalanceReservationFailureReason) {
+  if (reason === "missing-balance-row") return "balance-missing-row";
+  if (reason === "insufficient-balance") return "balance-insufficient";
+  if (reason === "missing-bucket" || reason === "missing-balance-type") {
+    return "balance-type-missing";
+  }
+
+  return "balance-reserve-failed";
+}
+
+function getBalanceReservationErrorMessage(reason: BalanceReservationFailureReason) {
+  if (reason === "missing-balance-row") {
+    return "Your leave request was not submitted because no matching leave balance was found for that leave type and year. Please contact an administrator.";
+  }
+  if (reason === "insufficient-balance") {
+    return "Your leave request was not submitted because the requested hours exceed your available balance.";
+  }
+  if (reason === "missing-bucket" || reason === "missing-balance-type") {
+    return "Your leave request was not submitted because that leave type is not linked to a balance bucket. Please contact an administrator.";
+  }
+
+  return "Your leave request was not submitted because the balance could not be reserved. Please try again or contact an administrator.";
+}
+
+function logLeaveBalanceReservationFailure(
+  reason: BalanceReservationFailureReason,
+  metadata: Record<string, unknown>,
+) {
+  console.warn("Leave balance reservation failed", {
+    reason,
+    ...metadata,
+  });
+}
+
+async function getLeaveBalanceWriteClient() {
+  try {
+    return createAdminClient();
+  } catch (error) {
+    console.warn("Leave balance write client unavailable", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    return null;
+  }
+}
+
+async function upsertLeaveBalanceSnapshot({
+  employeeId,
+  leaveTypeId,
+  year,
+  balance,
+  used,
+  pending,
+}: {
+  employeeId: string;
+  leaveTypeId: string;
+  year: number;
+  balance: number;
+  used: number;
+  pending: number;
+}) {
+  const supabase = await getLeaveBalanceWriteClient();
+
+  if (!supabase) return false;
+
+  const { error } = await supabase.from("leave_balances").upsert(
+    {
+      employee_id: employeeId,
+      leave_type_id: leaveTypeId,
+      year,
+      balance,
+      used,
+      pending,
+    },
+    { onConflict: "employee_id,leave_type_id,year" },
+  );
+
+  if (error) {
+    console.warn("Leave balance snapshot save failed", {
+      employeeId,
+      leaveTypeId,
+      year,
+      code: error.code,
+      message: error.message,
+    });
+  }
+
+  return !error;
 }
 
 async function deleteUnreservedLeaveRequest({
@@ -1201,29 +1357,56 @@ async function getLeaveBalanceContext({
   employeeId: string;
   requestLeaveTypeName: string;
   startDate: string;
-}) {
-  const balanceBucketName = BALANCE_BUCKET_BY_REQUEST_TYPE[requestLeaveTypeName];
+}): Promise<LeaveBalanceContext | null> {
+  const balanceBucketName = getBalanceBucketNameForRequest(requestLeaveTypeName);
 
   if (!balanceBucketName) return null;
 
-  const supabase = await createClient();
+  const supabase = await getLeaveBalanceWriteClient();
+
+  if (!supabase) return null;
+
   const year = getLeaveBalanceYear(startDate);
-  const { data: balanceType } = await supabase
+  const { data: leaveTypeRows, error: leaveTypeError } = await supabase
     .from("leave_types")
     .select("id,name")
-    .eq("name", balanceBucketName)
-    .maybeSingle();
-  const typedBalanceType = balanceType as { id: string; name: string } | null;
+    .eq("is_active", true);
+  const typedBalanceType = findLeaveTypeByName(
+    (leaveTypeRows ?? []) as { id: string; name: string }[],
+    balanceBucketName,
+  );
+
+  if (leaveTypeError) {
+    console.warn("Leave balance type lookup failed", {
+      employeeId,
+      requestLeaveTypeName,
+      balanceBucketName,
+      code: leaveTypeError.code,
+      message: leaveTypeError.message,
+    });
+    return null;
+  }
 
   if (!typedBalanceType) return null;
 
-  const { data: balance } = await supabase
+  const { data: balance, error: balanceError } = await supabase
     .from("leave_balances")
     .select("balance,used,pending")
     .eq("employee_id", employeeId)
     .eq("leave_type_id", typedBalanceType.id)
     .eq("year", year)
     .maybeSingle();
+
+  if (balanceError) {
+    console.warn("Leave balance row lookup failed", {
+      employeeId,
+      leaveTypeId: typedBalanceType.id,
+      year,
+      code: balanceError.code,
+      message: balanceError.message,
+    });
+    return null;
+  }
 
   return {
     balanceType: typedBalanceType,
@@ -1234,35 +1417,30 @@ async function getLeaveBalanceContext({
   };
 }
 
-async function upsertLeaveBalanceSnapshot({
-  employeeId,
-  leaveTypeId,
-  year,
-  balance,
-  used,
-  pending,
-}: {
-  employeeId: string;
-  leaveTypeId: string;
-  year: number;
-  balance: number;
-  used: number;
-  pending: number;
-}) {
-  const supabase = await createClient();
-  const { error } = await supabase.from("leave_balances").upsert(
-    {
-      employee_id: employeeId,
-      leave_type_id: leaveTypeId,
-      year,
-      balance,
-      used,
-      pending,
-    },
-    { onConflict: "employee_id,leave_type_id,year" },
-  );
+function getBalanceBucketNameForRequest(requestLeaveTypeName: string) {
+  const normalizedRequestTypeName = normalizeLeaveTypeName(requestLeaveTypeName);
 
-  return !error;
+  return Object.entries(BALANCE_BUCKET_BY_REQUEST_TYPE).find(
+    ([requestTypeName]) =>
+      normalizeLeaveTypeName(requestTypeName) === normalizedRequestTypeName,
+  )?.[1] ?? null;
+}
+
+function findLeaveTypeByName(
+  leaveTypes: { id: string; name: string }[],
+  expectedName: string,
+) {
+  const normalizedExpectedName = normalizeLeaveTypeName(expectedName);
+
+  return (
+    leaveTypes.find(
+      (leaveType) => normalizeLeaveTypeName(leaveType.name) === normalizedExpectedName,
+    ) ?? null
+  );
+}
+
+function normalizeLeaveTypeName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function getLeaveBalanceYear(startDate: string) {
