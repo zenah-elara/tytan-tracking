@@ -65,43 +65,7 @@ function buildScheduleAdjustmentRows({
   reason: string | null;
   createdBy: string | null;
 }) {
-  if (adjustmentKind === "single_day_off") {
-    const employeeId = readRequiredText(formData, "employee_id");
-    const workDate = readRequiredText(formData, "date_off");
-
-    if (!employeeId || !isValidDateInput(workDate)) return [];
-
-    return [
-      createAdjustmentRow({
-        employeeId,
-        workDate,
-        adjustmentType: "one_time_day_off",
-        reason,
-        linkedGroupId: null,
-        createdBy,
-      }),
-    ];
-  }
-
-  if (adjustmentKind === "single_workday") {
-    const employeeId = readRequiredText(formData, "employee_id");
-    const workDate = readRequiredText(formData, "work_date");
-
-    if (!employeeId || !isValidDateInput(workDate)) return [];
-
-    return [
-      createAdjustmentRow({
-        employeeId,
-        workDate,
-        adjustmentType: "one_time_workday",
-        reason,
-        linkedGroupId: null,
-        createdBy,
-      }),
-    ];
-  }
-
-  if (adjustmentKind === "day_off_offset") {
+  if (adjustmentKind === "move_day_off") {
     const employeeId = readRequiredText(formData, "employee_id");
     const originalDayOffDate = readRequiredText(formData, "original_day_off_date");
     const newDayOffDate = readRequiredText(formData, "new_day_off_date");
@@ -128,6 +92,66 @@ function buildScheduleAdjustmentRows({
       createAdjustmentRow({
         employeeId,
         workDate: newDayOffDate,
+        adjustmentType: "one_time_day_off",
+        reason,
+        linkedGroupId,
+        createdBy,
+      }),
+    ];
+  }
+
+  if (adjustmentKind === "swap_day_offs") {
+    const employeeAId = readRequiredText(formData, "employee_a_id");
+    const employeeBId = readRequiredText(formData, "employee_b_id");
+    const employeeAOriginalDayOffDate = readRequiredText(
+      formData,
+      "employee_a_original_day_off_date",
+    );
+    const employeeBOriginalDayOffDate = readRequiredText(
+      formData,
+      "employee_b_original_day_off_date",
+    );
+
+    if (
+      !employeeAId ||
+      !employeeBId ||
+      employeeAId === employeeBId ||
+      !isValidDateInput(employeeAOriginalDayOffDate) ||
+      !isValidDateInput(employeeBOriginalDayOffDate)
+    ) {
+      return [];
+    }
+
+    const linkedGroupId = crypto.randomUUID();
+
+    return [
+      createAdjustmentRow({
+        employeeId: employeeAId,
+        workDate: employeeAOriginalDayOffDate,
+        adjustmentType: "one_time_workday",
+        reason,
+        linkedGroupId,
+        createdBy,
+      }),
+      createAdjustmentRow({
+        employeeId: employeeAId,
+        workDate: employeeBOriginalDayOffDate,
+        adjustmentType: "one_time_day_off",
+        reason,
+        linkedGroupId,
+        createdBy,
+      }),
+      createAdjustmentRow({
+        employeeId: employeeBId,
+        workDate: employeeBOriginalDayOffDate,
+        adjustmentType: "one_time_workday",
+        reason,
+        linkedGroupId,
+        createdBy,
+      }),
+      createAdjustmentRow({
+        employeeId: employeeBId,
+        workDate: employeeAOriginalDayOffDate,
         adjustmentType: "one_time_day_off",
         reason,
         linkedGroupId,

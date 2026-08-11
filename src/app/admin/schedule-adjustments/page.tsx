@@ -76,8 +76,8 @@ export default async function AdminScheduleAdjustmentsPage({
             New one-time adjustment
           </h2>
           <p className="mt-1 max-w-3xl text-sm text-zinc-600">
-            Choose the kind of temporary change, then fill in only the dates
-            needed for that change.
+            Choose whether one employee is moving a day off or two employees
+            are swapping day-off dates.
           </p>
         </div>
         <ScheduleAdjustmentForm
@@ -257,11 +257,13 @@ function getGroupLabel(
   adjustment: ScheduleAdjustmentRow,
   linkedGroupCounts: Map<string, number>,
 ) {
-  if (!adjustment.linked_group_id) return "Single adjustment";
+  if (!adjustment.linked_group_id) return "Moved day off";
 
   const count = linkedGroupCounts.get(adjustment.linked_group_id) ?? 1;
 
-  return count > 1 ? "Linked offset" : "Linked adjustment";
+  if (count >= 4) return "Day-off swap";
+
+  return "Moved day off";
 }
 
 function StatusBadge({ status }: { status: "active" | "cancelled" }) {

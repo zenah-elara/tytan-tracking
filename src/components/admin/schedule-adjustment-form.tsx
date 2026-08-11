@@ -9,9 +9,7 @@ type EmployeeOption = {
 };
 
 type AdjustmentKind =
-  | "single_day_off"
-  | "single_workday"
-  | "day_off_offset"
+  | "move_day_off"
   | "swap_day_offs";
 
 type ScheduleAdjustmentFormProps = {
@@ -19,19 +17,14 @@ type ScheduleAdjustmentFormProps = {
 };
 
 const KIND_HELPER_TEXT: Record<AdjustmentKind, string> = {
-  single_day_off:
-    "This employee is not expected to clock in on this date. No leave will be deducted.",
-  single_workday:
-    "This employee is expected to work on this date, even if it is normally their day off.",
-  day_off_offset:
+  move_day_off:
     "Use this when an employee works on their usual day off and takes another day off instead.",
   swap_day_offs:
-    "Coming soon. For now, create a day-off offset for each employee involved in the swap.",
+    "Use this when two employees trade day-off dates with each other.",
 };
 
 export function ScheduleAdjustmentForm({ employees }: ScheduleAdjustmentFormProps) {
-  const [kind, setKind] = useState<AdjustmentKind>("single_day_off");
-  const isSwap = kind === "swap_day_offs";
+  const [kind, setKind] = useState<AdjustmentKind>("move_day_off");
 
   return (
     <form
@@ -46,12 +39,8 @@ export function ScheduleAdjustmentForm({ employees }: ScheduleAdjustmentFormProp
           onChange={(event) => setKind(event.target.value as AdjustmentKind)}
           className={fieldClassName}
         >
-          <option value="single_day_off">Single day off</option>
-          <option value="single_workday">Single workday</option>
-          <option value="day_off_offset">Day-off offset</option>
-          <option value="swap_day_offs" disabled>
-            Swap day-offs between two employees - coming soon
-          </option>
+          <option value="move_day_off">Move one employee&apos;s day off</option>
+          <option value="swap_day_offs">Swap day-offs between two employees</option>
         </select>
       </label>
 
@@ -59,21 +48,7 @@ export function ScheduleAdjustmentForm({ employees }: ScheduleAdjustmentFormProp
         {KIND_HELPER_TEXT[kind]}
       </p>
 
-      {kind === "single_day_off" ? (
-        <>
-          <EmployeeSelect employees={employees} label="Employee" />
-          <DateField label="Date off" name="date_off" />
-        </>
-      ) : null}
-
-      {kind === "single_workday" ? (
-        <>
-          <EmployeeSelect employees={employees} label="Employee" />
-          <DateField label="Work date" name="work_date" />
-        </>
-      ) : null}
-
-      {kind === "day_off_offset" ? (
+      {kind === "move_day_off" ? (
         <>
           <EmployeeSelect employees={employees} label="Employee" />
           <DateField
@@ -88,31 +63,48 @@ export function ScheduleAdjustmentForm({ employees }: ScheduleAdjustmentFormProp
         </>
       ) : null}
 
-      {isSwap ? (
-        <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-5 text-sm text-zinc-600 lg:col-span-4">
-          Swap day-offs will be added after the paired-row rules are finalized.
-          Use Day-off offset twice for now, once for each employee.
-        </div>
-      ) : null}
-
-      {!isSwap ? (
+      {kind === "swap_day_offs" ? (
         <>
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d] lg:col-span-4">
-            Reason / notes
-            <textarea
-              name="reason"
-              rows={3}
-              placeholder="Add a short explanation for payroll and attendance review."
-              className="rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 py-2 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30"
-            />
-          </label>
-          <div className="lg:col-span-4">
-            <button className="rounded-lg bg-[#f2d300] px-4 py-2 text-sm font-bold text-[#001f4d] transition hover:bg-[#ffe45c]">
-              Create adjustment
-            </button>
-          </div>
+          <EmployeeSelect
+            employees={employees}
+            label="Employee A"
+            name="employee_a_id"
+          />
+          <DateField
+            label="Employee A's original day off"
+            name="employee_a_original_day_off_date"
+          />
+          <EmployeeSelect
+            employees={employees}
+            label="Employee B"
+            name="employee_b_id"
+          />
+          <DateField
+            label="Employee B's original day off"
+            name="employee_b_original_day_off_date"
+          />
+          <p className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-xs font-semibold text-sky-800 lg:col-span-4">
+            Example: Ching is usually off Monday and Alida is usually off
+            Friday. Ching works Monday and takes Friday off; Alida works Friday
+            and takes Monday off.
+          </p>
         </>
       ) : null}
+
+      <label className="grid gap-2 text-sm font-semibold text-[#001f4d] lg:col-span-4">
+        Reason / notes
+        <textarea
+          name="reason"
+          rows={3}
+          placeholder="Add a short explanation for payroll and attendance review."
+          className="rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 py-2 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30"
+        />
+      </label>
+      <div className="lg:col-span-4">
+        <button className="rounded-lg bg-[#f2d300] px-4 py-2 text-sm font-bold text-[#001f4d] transition hover:bg-[#ffe45c]">
+          Create adjustment
+        </button>
+      </div>
     </form>
   );
 }
@@ -120,14 +112,16 @@ export function ScheduleAdjustmentForm({ employees }: ScheduleAdjustmentFormProp
 function EmployeeSelect({
   employees,
   label,
+  name = "employee_id",
 }: {
   employees: EmployeeOption[];
   label: string;
+  name?: string;
 }) {
   return (
     <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
       {label}
-      <select name="employee_id" required className={fieldClassName}>
+      <select name={name} required className={fieldClassName}>
         <option value="">Choose employee</option>
         {employees.map((employee) => (
           <option key={employee.id} value={employee.id}>
