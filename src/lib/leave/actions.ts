@@ -10,6 +10,7 @@ import {
 import { canSupervisorApproveLeaveForEmployee } from "@/lib/leave/approval-scope";
 import { notifyAdminsAndEmployeeManager } from "@/lib/notifications/actions";
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { ScheduleAdjustmentRow } from "@/lib/schedule/adjustments";
 import { createClient } from "@/lib/supabase/server";
 import type { LeavePolicyType, LeaveRequestStatus } from "@/types/leave";
 
@@ -101,6 +102,7 @@ type LeaveSubmissionFailureReason =
   | "leave-type-not-found"
   | "invalid-leave-type"
   | "duplicate-check-failed"
+  | "one-time-day-off"
   | "request-save-failed"
   | "request-confirm-failed";
 
@@ -638,6 +640,21 @@ export async function submitLeaveRequestAction(formData: FormData) {
     redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "invalid-leave-type");
   }
 
+  const oneTimeDayOff = await getActiveOneTimeDayOffInRange({
+    supabase,
+    employeeId: employee.id,
+    startDate,
+    endDate,
+  });
+
+  if (oneTimeDayOff.blocked) {
+    logLeaveSubmissionFailure("one-time-day-off", {
+      employeeId: employee.id,
+      workDate: oneTimeDayOff.workDate,
+    });
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "one-time-day-off");
+  }
+
   const initialStatus = await getInitialLeaveRequestStatus(employee);
   const { data: request, error } = await supabase
     .from("leave_requests")
@@ -801,6 +818,24 @@ export async function submitLeaveRequestFormAction(
     return {
       status: "error",
       message: getLeaveSubmissionErrorMessage("invalid-leave-type"),
+    };
+  }
+
+  const oneTimeDayOff = await getActiveOneTimeDayOffInRange({
+    supabase,
+    employeeId: employee.id,
+    startDate,
+    endDate,
+  });
+
+  if (oneTimeDayOff.blocked) {
+    logLeaveSubmissionFailure("one-time-day-off", {
+      employeeId: employee.id,
+      workDate: oneTimeDayOff.workDate,
+    });
+    return {
+      status: "error",
+      message: getLeaveSubmissionErrorMessage("one-time-day-off"),
     };
   }
 
@@ -1327,6 +1362,9 @@ function getLeaveSubmissionErrorMessage(reason: LeaveSubmissionFailureReason) {
   if (reason === "duplicate-check-failed") {
     return "We could not confirm whether this request was already submitted. Please try again.";
   }
+  if (reason === "one-time-day-off") {
+    return "This date is already marked as a one-time day off. No leave deduction is needed.";
+  }
   if (reason === "request-confirm-failed") {
     return "The request was saved but could not be confirmed. Please contact an administrator.";
   }
@@ -1342,6 +1380,46 @@ function logLeaveSubmissionFailure(
     reason,
     ...metadata,
   });
+}
+
+async function getActiveOneTimeDayOffInRange({
+  supabase,
+  employeeId,
+  startDate,
+  endDate,
+}: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  employeeId: string;
+  startDate: string;
+  endDate: string;
+}) {
+  const { data, error } = await supabase
+    .from("schedule_adjustments")
+    .select("employee_id,work_date,adjustment_type,status")
+    .eq("employee_id", employeeId)
+    .eq("status", "active")
+    .eq("adjustment_type", "one_time_day_off")
+    .gte("work_date", startDate)
+    .lte("work_date", endDate)
+    .order("work_date", { ascending: true })
+    .limit(1);
+
+  if (error) {
+    console.warn("One-time day-off lookup failed during leave submission", {
+      employeeId,
+      startDate,
+      endDate,
+      code: error.code,
+      message: error.message,
+    });
+    return { blocked: false as const, workDate: null };
+  }
+
+  const adjustment = ((data ?? []) as ScheduleAdjustmentRow[])[0];
+
+  return adjustment
+    ? { blocked: true as const, workDate: adjustment.work_date }
+    : { blocked: false as const, workDate: null };
 }
 
 function getBalanceReservationErrorCode(reason: BalanceReservationFailureReason) {

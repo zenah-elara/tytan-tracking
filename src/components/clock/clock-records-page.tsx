@@ -13,6 +13,10 @@ import {
   STALE_OPEN_SESSION_GRACE_MINUTES,
 } from "@/lib/clock/duration";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
+import {
+  getActiveScheduleAdjustment,
+  type ScheduleAdjustmentRow,
+} from "@/lib/schedule/adjustments";
 import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
 
@@ -197,6 +201,7 @@ export async function ClockRecordsPage({
     { data: scheduleAssignmentData },
     { data: scheduleData },
     { data: dayOffData },
+    { data: scheduleAdjustmentData },
     { data: reviewData },
   ] = await Promise.all([
     query,
@@ -222,6 +227,11 @@ export async function ClockRecordsPage({
     supabase
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
+      .limit(1000),
+    supabase
+      .from("schedule_adjustments")
+      .select("employee_id,work_date,adjustment_type,status,reason,linked_group_id")
+      .eq("status", "active")
       .limit(1000),
     supabase
       .from("attendance_record_reviews")
@@ -255,6 +265,9 @@ export async function ClockRecordsPage({
   const normalizedSearchParams = withDefaultRange(searchParams, mode, schedules);
   const dayOffRosters = ((dayOffData ?? []) as DayOffRosterRow[]).filter((row) =>
     employeeIds.has(row.employeeid),
+  );
+  const scheduleAdjustments = ((scheduleAdjustmentData ?? []) as ScheduleAdjustmentRow[]).filter(
+    (adjustment) => employeeIds.has(adjustment.employee_id),
   );
   const reviewMap = new Map(
     ((reviewData ?? []) as AttendanceReviewRow[]).map((review) => [
@@ -317,6 +330,7 @@ export async function ClockRecordsPage({
         scheduleAssignments,
         scheduleMap,
         dayOffRosters,
+        scheduleAdjustments,
         reviewMap,
       ),
     )
@@ -348,6 +362,7 @@ export async function ClockRecordsPage({
           scheduleAssignments,
           scheduleMap,
           dayOffRosters,
+          scheduleAdjustments,
           searchParams: normalizedSearchParams,
         })
       : [];
@@ -1126,6 +1141,7 @@ function getNotClockedInItems({
   scheduleAssignments,
   scheduleMap,
   dayOffRosters,
+  scheduleAdjustments,
   searchParams,
 }: {
   employees: EmployeeRow[];
@@ -1136,6 +1152,7 @@ function getNotClockedInItems({
   scheduleAssignments: ScheduleAssignmentRow[];
   scheduleMap: Map<string, WorkScheduleRow>;
   dayOffRosters: DayOffRosterRow[];
+  scheduleAdjustments: ScheduleAdjustmentRow[];
   searchParams: ClockRecordsSearchParams;
 }) {
   const today = getManilaDateString(new Date());
@@ -1171,6 +1188,7 @@ function getNotClockedInItems({
         employee.id,
         selectedDate,
         dayOffRosters,
+        scheduleAdjustments,
       );
       const schedule = findScheduleForEmployee(
         employee.id,
@@ -1219,6 +1237,7 @@ function enrichSession(
   scheduleAssignments: ScheduleAssignmentRow[],
   scheduleMap: Map<string, WorkScheduleRow>,
   dayOffRosters: DayOffRosterRow[],
+  scheduleAdjustments: ScheduleAdjustmentRow[],
   reviewMap: Map<string, AttendanceReviewRow>,
 ): EnrichedClockSession {
   const employee = employeeMap.get(session.employeeid);
@@ -1238,7 +1257,12 @@ function enrichSession(
           .join(", ")
       : "None";
   const schedule = findScheduleForSession(session, scheduleAssignments, scheduleMap);
-  const dayOffLabel = getDayOffLabel(session, dayOffRosters);
+  const scheduleAdjustment = getActiveScheduleAdjustment(
+    session.employeeid,
+    session.workdate,
+    scheduleAdjustments,
+  );
+  const dayOffLabel = getDayOffLabel(session, dayOffRosters, scheduleAdjustments);
   const scheduleFlags = getScheduleFlags(session, schedule);
   const computedAttendanceStatus = getAttendanceStatus(
     session,
@@ -1246,6 +1270,7 @@ function enrichSession(
     dayOffLabel,
     schedule,
     scheduleFlags,
+    scheduleAdjustment?.adjustment_type === "one_time_workday",
   );
   const flags = getFlags(
     session,
@@ -1254,6 +1279,7 @@ function enrichSession(
     computedAttendanceStatus,
     schedule,
     scheduleFlags,
+    scheduleAdjustment?.adjustment_type ?? null,
   );
   const review = reviewMap.get(session.id);
   const attendanceStatus = review?.reviewstatus ?? computedAttendanceStatus;
@@ -1280,9 +1306,10 @@ function getAttendanceStatus(
   dayOffLabel: string,
   schedule: ScheduleContext | null,
   scheduleFlags: string[],
+  isAdjustedWorkday = false,
 ): AttendanceStatus {
   if (leaveMatches.length > 0) return "on_leave";
-  if (dayOffLabel !== "None") return "day_off";
+  if (dayOffLabel !== "None" && !isAdjustedWorkday) return "day_off";
   if (
     isOngoingSession(session, schedule) &&
     !scheduleFlags.includes("Schedule Missing") &&
@@ -1309,11 +1336,17 @@ function getFlags(
   attendanceStatus: AttendanceStatus,
   schedule: ScheduleContext | null,
   scheduleFlags: string[],
+  scheduleAdjustmentType: ScheduleAdjustmentRow["adjustment_type"] | null = null,
 ) {
   const flags = [...scheduleFlags];
 
   if (leaveMatches.length > 0) flags.push("On PTO/Leave");
-  if (dayOffLabel !== "None") flags.push("Day Off");
+  if (dayOffLabel !== "None") {
+    flags.push(dayOffLabel === "Adjusted Day Off" ? "Adjusted Day Off" : "Day Off");
+  }
+  if (scheduleAdjustmentType === "one_time_workday") {
+    flags.push("Adjusted Workday");
+  }
   if (isOngoingSession(session, schedule) && session.status === "active") {
     flags.push("Active shift");
   }
@@ -1339,7 +1372,21 @@ function getFlags(
 function getDayOffLabel(
   session: ClockSessionRow,
   dayOffRosters: DayOffRosterRow[],
+  scheduleAdjustments: ScheduleAdjustmentRow[] = [],
 ) {
+  const adjustment = getActiveScheduleAdjustment(
+    session.employeeid,
+    session.workdate,
+    scheduleAdjustments,
+  );
+
+  if (adjustment?.adjustment_type === "one_time_day_off") {
+    return "Adjusted Day Off";
+  }
+  if (adjustment?.adjustment_type === "one_time_workday") {
+    return "None";
+  }
+
   return getMonthlyRosterDayOffLabel(
     session.employeeid,
     session.workdate,
@@ -1612,7 +1659,17 @@ function getEmployeeDayOffLabel(
   employeeId: string,
   date: string,
   dayOffRosters: DayOffRosterRow[],
+  scheduleAdjustments: ScheduleAdjustmentRow[] = [],
 ) {
+  const adjustment = getActiveScheduleAdjustment(employeeId, date, scheduleAdjustments);
+
+  if (adjustment?.adjustment_type === "one_time_day_off") {
+    return "Adjusted Day Off";
+  }
+  if (adjustment?.adjustment_type === "one_time_workday") {
+    return "None";
+  }
+
   return getMonthlyRosterDayOffLabel(employeeId, date, dayOffRosters);
 }
 

@@ -63,6 +63,7 @@ export const navigationGroups: NavigationGroup[] = [
     title: "Attendance",
     links: [
       { label: "Monthly Day-Offs", href: "/admin/monthly-day-offs" },
+      { label: "Schedule Adjustments", href: "/admin/schedule-adjustments" },
       { label: "Clock Records", href: "/admin/clock-records" },
       { label: "Attendance Records", href: "/admin/attendance-records" },
       { label: "Attendance Logs", href: "/admin/attendance-logs" },

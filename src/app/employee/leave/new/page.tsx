@@ -106,6 +106,10 @@ function getErrorMessage(error: string) {
     return "We could not confirm whether this request was already submitted. Please try again.";
   }
 
+  if (error === "one-time-day-off") {
+    return "This date is already marked as a one-time day off. No leave deduction is needed.";
+  }
+
   if (error === "request-save-failed") {
     return "The request could not be saved. Please contact an administrator.";
   }

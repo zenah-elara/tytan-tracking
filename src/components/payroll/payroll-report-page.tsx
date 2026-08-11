@@ -9,6 +9,10 @@ import {
   STALE_OPEN_SESSION_GRACE_MINUTES,
 } from "@/lib/clock/duration";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
+import {
+  getActiveScheduleAdjustment,
+  type ScheduleAdjustmentRow,
+} from "@/lib/schedule/adjustments";
 import { createClient } from "@/lib/supabase/server";
 import type { ClockSessionStatus } from "@/types/clock";
 
@@ -104,6 +108,7 @@ type PayrollDay = {
   hasSchedule: boolean;
   isExpectedPayable: boolean;
   isCountedPayable: boolean;
+  adjustmentLabel: string;
   completedLogsCount: number;
   openLogsCount: number;
   missingClockOutCount: number;
@@ -132,6 +137,8 @@ type PayrollCrewGroup = {
   scheduledNetMinutesPerDay: number;
   noRosterDatesCount: number;
   noScheduleDatesCount: number;
+  adjustedDayOffCount: number;
+  adjustedWorkdayCount: number;
 };
 
 type NormalizedSearchParams = {
@@ -187,6 +194,7 @@ export async function PayrollReportPage({
     { data: leaveData },
     { data: leaveTypeData },
     { data: dayOffData },
+    { data: scheduleAdjustmentData },
   ] = await Promise.all([
     supabase
       .from("clock_sessions")
@@ -216,6 +224,13 @@ export async function PayrollReportPage({
       .from("monthly_day_off_rosters")
       .select("employeeid,month,dayoff")
       .limit(1000),
+    supabase
+      .from("schedule_adjustments")
+      .select("employee_id,work_date,adjustment_type,status,reason,linked_group_id")
+      .eq("status", "active")
+      .gte("work_date", range.from)
+      .lte("work_date", range.to)
+      .limit(1000),
   ]);
 
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
@@ -236,11 +251,19 @@ export async function PayrollReportPage({
   const dayOffRosters = ((dayOffData ?? []) as DayOffRosterRow[]).filter((row) =>
     employeeIds.has(row.employeeid),
   );
+  const scheduleAdjustments = ((scheduleAdjustmentData ?? []) as ScheduleAdjustmentRow[]).filter(
+    (adjustment) => employeeIds.has(adjustment.employee_id),
+  );
+  const adjustedRange = withScheduleAdjustmentPayableDates(
+    range,
+    scheduleAdjustments,
+  );
+  const reportRange = adjustedRange;
   const sessions = ((sessionData ?? []) as ClockSessionRow[]).filter((session) =>
     employeeIds.has(session.employeeid),
   );
   const groups = groupPayrollLogs({
-    range,
+    range: adjustedRange,
     employees,
     sessions,
     employeeMap,
@@ -250,8 +273,9 @@ export async function PayrollReportPage({
     approvedLeaves,
     leaveTypeMap,
     dayOffRosters,
+    scheduleAdjustments,
   });
-  const csvHref = buildCsvHref(groups, range);
+  const csvHref = buildCsvHref(groups, adjustedRange);
   const totalPayrollMinutes = groups.reduce(
     (total, group) => total + group.totalRenderedMinutes,
     0,
@@ -273,7 +297,7 @@ export async function PayrollReportPage({
           </div>
           <a
             href={csvHref}
-            download={`payroll-report-${range.from}-to-${range.to}.csv`}
+            download={`payroll-report-${reportRange.from}-to-${reportRange.to}.csv`}
             className="inline-flex h-10 w-fit items-center rounded-lg bg-[#f2d300] px-4 text-sm font-bold text-[#001f4d] transition hover:bg-[#ffe44d]"
           >
             Export CSV
@@ -290,19 +314,19 @@ export async function PayrollReportPage({
       <PayrollFilters range={range} />
 
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-        <SummaryCard label="Pay period" value={`${range.from} to ${range.to}`} />
+        <SummaryCard label="Pay period" value={`${reportRange.from} to ${reportRange.to}`} />
         <SummaryCard
           label="Payroll cutoff"
-          value={PAYROLL_CUTOFF_LABELS[range.cutoff]}
+          value={PAYROLL_CUTOFF_LABELS[reportRange.cutoff]}
         />
-        <SummaryCard label="Completed through" value={range.asOfDate} />
+        <SummaryCard label="Completed through" value={reportRange.asOfDate} />
         <SummaryCard
           label="Expected payable days"
-          value={String(range.payableDates.length)}
+          value={String(reportRange.payableDates.length)}
         />
         <SummaryCard
           label="Counted payable days"
-          value={String(range.countedPayableDates.length)}
+          value={String(reportRange.countedPayableDates.length)}
         />
       </section>
 
@@ -319,11 +343,11 @@ export async function PayrollReportPage({
           Expected Payable Dates
         </h2>
         <div className="mt-3 flex flex-wrap gap-2">
-          {range.payableDates.map((date) => (
+          {reportRange.payableDates.map((date) => (
             <span
               key={date}
               className={`inline-flex rounded-full border px-3 py-1 text-xs font-black ${
-                range.countedPayableDates.includes(date)
+                reportRange.countedPayableDates.includes(date)
                   ? "border-[#efe6b6] bg-[#fffdf2] text-[#001f4d]"
                   : "border-zinc-200 bg-zinc-50 text-zinc-500"
               }`}
@@ -517,6 +541,7 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
               <th className="px-5 py-3">Clock rendered audit</th>
               <th className="px-5 py-3">Scheduled audit hours</th>
               <th className="px-5 py-3">Expected</th>
+              <th className="px-5 py-3">Adjustment</th>
               <th className="px-5 py-3">PTO/Leave</th>
               <th className="px-5 py-3">Day Off</th>
               <th className="px-5 py-3">Daily notes</th>
@@ -543,8 +568,11 @@ function CrewBreakdown({ group }: { group: PayrollCrewGroup }) {
                 <td className="px-5 py-4 text-zinc-600">
                   {day.isCountedPayable
                     ? "Counted payable workday"
-                    : "Not completed yet"}
+                    : day.isExpectedPayable
+                      ? "Not completed yet"
+                      : "Not payable"}
                 </td>
+                <td className="px-5 py-4 text-zinc-600">{day.adjustmentLabel}</td>
                 <td className="px-5 py-4 text-zinc-600">{day.leaveLabel}</td>
                 <td className="px-5 py-4 text-zinc-600">{day.dayOffLabel}</td>
                 <td className="px-5 py-4 text-zinc-600">
@@ -618,6 +646,7 @@ function groupPayrollLogs({
   approvedLeaves,
   leaveTypeMap,
   dayOffRosters,
+  scheduleAdjustments,
 }: {
   range: NormalizedSearchParams;
   employees: EmployeeRow[];
@@ -629,6 +658,7 @@ function groupPayrollLogs({
   approvedLeaves: LeaveRequestRow[];
   leaveTypeMap: Map<string, string>;
   dayOffRosters: DayOffRosterRow[];
+  scheduleAdjustments: ScheduleAdjustmentRow[];
 }) {
   const groups = new Map<string, PayrollCrewGroup>();
 
@@ -678,6 +708,7 @@ function groupPayrollLogs({
       approvedLeaves,
       leaveTypeMap,
       dayOffRosters,
+      scheduleAdjustments,
     });
   }
 
@@ -716,6 +747,8 @@ function createPayrollGroup(
     scheduledNetMinutesPerDay: 0,
     noRosterDatesCount: 0,
     noScheduleDatesCount: 0,
+    adjustedDayOffCount: 0,
+    adjustedWorkdayCount: 0,
   };
 }
 
@@ -727,6 +760,7 @@ function applyDailyPayrollTotals({
   approvedLeaves,
   leaveTypeMap,
   dayOffRosters,
+  scheduleAdjustments,
 }: {
   group: PayrollCrewGroup;
   range: NormalizedSearchParams;
@@ -735,6 +769,7 @@ function applyDailyPayrollTotals({
   approvedLeaves: LeaveRequestRow[];
   leaveTypeMap: Map<string, string>;
   dayOffRosters: DayOffRosterRow[];
+  scheduleAdjustments: ScheduleAdjustmentRow[];
 }) {
   const dailyBuckets = new Map<
     string,
@@ -814,20 +849,24 @@ function applyDailyPayrollTotals({
   group.scheduledNetMinutesPerDay = 0;
   group.noRosterDatesCount = 0;
   group.noScheduleDatesCount = 0;
+  group.adjustedDayOffCount = 0;
+  group.adjustedWorkdayCount = 0;
   const scheduledNetMinutes = getScheduledNetMinutesForPeriod(
     group.employeeId,
     range,
     scheduleAssignments,
     scheduleMap,
   );
-  group.expectedPayableDaysCount = range.payableDates.length;
-  group.countedPayableDaysCount = range.countedPayableDates.length;
   group.scheduledNetMinutesPerDay = scheduledNetMinutes;
-  group.totalRenderedMinutes = range.countedPayableDates.length * scheduledNetMinutes;
 
   for (const [workdate, bucket] of [...dailyBuckets.entries()].sort(([first], [second]) =>
     first.localeCompare(second),
   )) {
+    const adjustment = getActiveScheduleAdjustment(
+      group.employeeId,
+      workdate,
+      scheduleAdjustments,
+    );
     const schedule = findScheduleForEmployeeDate(
       group.employeeId,
       workdate,
@@ -844,14 +883,36 @@ function applyDailyPayrollTotals({
       group.employeeId,
       workdate,
       dayOffRosters,
+      scheduleAdjustments,
     );
-    const hasRoster = hasPayrollMonthRoster(group.employeeId, workdate, dayOffRosters);
+    const hasRoster =
+      Boolean(adjustment) || hasPayrollMonthRoster(group.employeeId, workdate, dayOffRosters);
     const hasSchedule = Boolean(schedule);
-    const isExpectedPayable = true;
-    const isCountedPayable = range.countedPayableDates.includes(workdate);
+    const adjustmentLabel =
+      adjustment?.adjustment_type === "one_time_day_off"
+        ? "Adjusted Day Off"
+        : adjustment?.adjustment_type === "one_time_workday"
+          ? "Adjusted Workday"
+          : "None";
+    const isExpectedPayable = adjustment?.adjustment_type !== "one_time_day_off";
+    const isCountedPayable =
+      isExpectedPayable && range.countedPayableDates.includes(workdate);
     const payrollMinutes = isCountedPayable ? scheduledNetMinutes : 0;
     const duplicateCompletedLogsCount = Math.max(0, bucket.completedLogsCount - 1);
 
+    if (isExpectedPayable) {
+      group.expectedPayableDaysCount += 1;
+    }
+    if (isCountedPayable) {
+      group.countedPayableDaysCount += 1;
+    }
+    group.totalRenderedMinutes += payrollMinutes;
+    if (adjustment?.adjustment_type === "one_time_day_off") {
+      group.adjustedDayOffCount += 1;
+    }
+    if (adjustment?.adjustment_type === "one_time_workday") {
+      group.adjustedWorkdayCount += 1;
+    }
     if (!hasSchedule) {
       group.noScheduleDatesCount += 1;
     }
@@ -886,6 +947,7 @@ function applyDailyPayrollTotals({
       hasSchedule,
       isExpectedPayable,
       isCountedPayable,
+      adjustmentLabel,
       completedLogsCount: bucket.completedLogsCount,
       openLogsCount: bucket.openLogsCount,
       missingClockOutCount: bucket.missingClockOutCount,
@@ -1013,6 +1075,20 @@ function getGroupStatusNote(group: PayrollCrewGroup) {
       } noted for audit`,
     );
   }
+  if (group.adjustedDayOffCount > 0) {
+    notes.push(
+      `${group.adjustedDayOffCount} one-time day off${
+        group.adjustedDayOffCount === 1 ? "" : "s"
+      } excluded`,
+    );
+  }
+  if (group.adjustedWorkdayCount > 0) {
+    notes.push(
+      `${group.adjustedWorkdayCount} one-time workday${
+        group.adjustedWorkdayCount === 1 ? "" : "s"
+      } included`,
+    );
+  }
   if (group.noRosterDatesCount > 0) {
     notes.push("No roster set for one or more dates");
   }
@@ -1051,7 +1127,17 @@ function getPayrollRosterDayOffLabel(
   employeeId: string,
   workdate: string,
   dayOffRosters: DayOffRosterRow[],
+  scheduleAdjustments: ScheduleAdjustmentRow[] = [],
 ) {
+  const adjustment = getActiveScheduleAdjustment(employeeId, workdate, scheduleAdjustments);
+
+  if (adjustment?.adjustment_type === "one_time_day_off") {
+    return "Adjusted Day Off";
+  }
+  if (adjustment?.adjustment_type === "one_time_workday") {
+    return "None";
+  }
+
   const assignedDayOff = getPayrollRosterAssignedDayOff(
     employeeId,
     workdate,
@@ -1152,13 +1238,21 @@ function getDayStatusNote(day: PayrollDay) {
   if (day.leaveLabel !== "None" && day.completedLogsCount > 0) {
     notes.push("Completed work on approved PTO/leave date; audit only");
   }
+  if (day.adjustmentLabel === "Adjusted Day Off") {
+    notes.push("One-time day off; excluded from payroll total");
+  }
+  if (day.adjustmentLabel === "Adjusted Workday") {
+    notes.push("One-time workday; included as expected workday");
+  }
   if (!day.hasRoster) {
     notes.push("No roster set for payroll month");
   }
   if (!day.hasSchedule) {
     notes.push("No schedule configured");
   }
-  if (!day.isCountedPayable) {
+  if (!day.isExpectedPayable) {
+    notes.push("Not an expected payable workday");
+  } else if (!day.isCountedPayable) {
     notes.push("Payable date not completed yet; not counted");
   }
   if (day.isCountedPayable && day.completedLogsCount === 0) {
@@ -1196,14 +1290,18 @@ function buildCsvHref(groups: PayrollCrewGroup[], range: NormalizedSearchParams)
     ...dateHeaders,
   ];
   const rows = groups.map((group) => {
-    const dailyHours = formatHourCell(getGroupScheduledNetMinutes(group));
+    const payrollMinutesByDate = new Map(
+      group.days.map((day) => [day.workdate, day.payrollMinutes]),
+    );
 
     return [
       group.employeeName,
       formatDecimalHours(group.totalRenderedMinutes),
-      ...range.payableDates.map((date) =>
-        range.countedPayableDates.includes(date) ? dailyHours : "",
-      ),
+      ...range.payableDates.map((date) => {
+        const payrollMinutes = payrollMinutesByDate.get(date) ?? 0;
+
+        return payrollMinutes > 0 ? formatHourCell(payrollMinutes) : "";
+      }),
     ];
   });
   const csv = [headers, ...rows]
@@ -1231,6 +1329,23 @@ function withDefaultRange(
     asOfDate,
     payableDates,
     countedPayableDates: getCountedPayableDates(payableDates, asOfDate),
+  };
+}
+
+function withScheduleAdjustmentPayableDates(
+  range: NormalizedSearchParams,
+  scheduleAdjustments: ScheduleAdjustmentRow[],
+): NormalizedSearchParams {
+  const oneTimeWorkdays = scheduleAdjustments
+    .filter((adjustment) => adjustment.adjustment_type === "one_time_workday")
+    .map((adjustment) => adjustment.work_date)
+    .filter((workDate) => workDate >= range.from && workDate <= range.to);
+  const payableDates = [...new Set([...range.payableDates, ...oneTimeWorkdays])].sort();
+
+  return {
+    ...range,
+    payableDates,
+    countedPayableDates: getCountedPayableDates(payableDates, range.asOfDate),
   };
 }
 
