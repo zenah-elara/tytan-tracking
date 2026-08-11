@@ -83,11 +83,6 @@ export function ScheduleAdjustmentForm({ employees }: ScheduleAdjustmentFormProp
             label="Employee B's original day off"
             name="employee_b_original_day_off_date"
           />
-          <p className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-xs font-semibold text-sky-800 lg:col-span-4">
-            Example: Ching is usually off Monday and Alida is usually off
-            Friday. Ching works Monday and takes Friday off; Alida works Friday
-            and takes Monday off.
-          </p>
         </>
       ) : null}
 
