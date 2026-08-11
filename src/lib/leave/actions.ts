@@ -91,6 +91,19 @@ export type LeaveRequestSubmitState = {
   message: string;
 };
 
+type LeaveSubmissionFailureReason =
+  | "employee-not-linked"
+  | "missing-leave-type"
+  | "missing-dates"
+  | "invalid-date-range"
+  | "missing-hours"
+  | "leave-type-load-failed"
+  | "leave-type-not-found"
+  | "invalid-leave-type"
+  | "duplicate-check-failed"
+  | "request-save-failed"
+  | "request-confirm-failed";
+
 export async function createLeaveTypeAction(formData: FormData) {
   const name = readRequiredText(formData, "name");
   const description = readOptionalText(formData, "description");
@@ -568,8 +581,26 @@ export async function submitLeaveRequestAction(formData: FormData) {
   const requestedHours = readNumber(formData, "requested_hours");
   const reason = readOptionalText(formData, "reason");
 
-  if (!employee || !leaveTypeId || !startDate || !endDate || requestedHours <= 0) {
-    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "missing-request");
+  const validationFailure = getLeaveSubmissionValidationFailure({
+    employee,
+    leaveTypeId,
+    startDate,
+    endDate,
+    requestedHours,
+  });
+
+  if (validationFailure) {
+    logLeaveSubmissionFailure(validationFailure, {
+      employeeId: employee?.id ?? null,
+      hasLeaveTypeId: Boolean(leaveTypeId),
+      startDate,
+      endDate,
+      requestedHours,
+    });
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", validationFailure);
+  }
+  if (!employee) {
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "employee-not-linked");
   }
 
   const supabase = await createClient();
@@ -579,11 +610,31 @@ export async function submitLeaveRequestAction(formData: FormData) {
     .eq("id", leaveTypeId)
     .maybeSingle();
 
-  if (
-    leaveTypeError ||
-    !leaveType?.is_active ||
-    !EMPLOYEE_FILED_LEAVE_TYPE_NAMES.includes(leaveType.name)
-  ) {
+  if (leaveTypeError) {
+    logLeaveSubmissionFailure("leave-type-load-failed", {
+      employeeId: employee.id,
+      leaveTypeId,
+      code: leaveTypeError.code,
+      message: leaveTypeError.message,
+    });
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "leave-type-load-failed");
+  }
+
+  if (!leaveType) {
+    logLeaveSubmissionFailure("leave-type-not-found", {
+      employeeId: employee.id,
+      leaveTypeId,
+    });
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "leave-type-not-found");
+  }
+
+  if (!leaveType.is_active || !EMPLOYEE_FILED_LEAVE_TYPE_NAMES.includes(leaveType.name)) {
+    logLeaveSubmissionFailure("invalid-leave-type", {
+      employeeId: employee.id,
+      leaveTypeId,
+      leaveTypeName: leaveType.name,
+      isActive: leaveType.is_active,
+    });
     redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "invalid-leave-type");
   }
 
@@ -603,13 +654,31 @@ export async function submitLeaveRequestAction(formData: FormData) {
     .maybeSingle();
 
   if (error) {
-    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
+    logLeaveSubmissionFailure("request-save-failed", {
+      employeeId: employee.id,
+      leaveTypeId,
+      startDate,
+      endDate,
+      requestedHours,
+      initialStatus,
+      code: error.code,
+      message: error.message,
+    });
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "request-save-failed");
   }
 
   const requestId = (request as { id?: string } | null)?.id;
 
   if (!requestId) {
-    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "submit-failed");
+    logLeaveSubmissionFailure("request-confirm-failed", {
+      employeeId: employee.id,
+      leaveTypeId,
+      startDate,
+      endDate,
+      requestedHours,
+      initialStatus,
+    });
+    redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "request-confirm-failed");
   }
 
   const reserved = await reservePendingLeaveHours({
@@ -663,10 +732,31 @@ export async function submitLeaveRequestFormAction(
   const requestedHours = readNumber(formData, "requested_hours");
   const reason = readOptionalText(formData, "reason");
 
-  if (!employee || !leaveTypeId || !startDate || !endDate || requestedHours <= 0) {
+  const validationFailure = getLeaveSubmissionValidationFailure({
+    employee,
+    leaveTypeId,
+    startDate,
+    endDate,
+    requestedHours,
+  });
+
+  if (validationFailure) {
+    logLeaveSubmissionFailure(validationFailure, {
+      employeeId: employee?.id ?? null,
+      hasLeaveTypeId: Boolean(leaveTypeId),
+      startDate,
+      endDate,
+      requestedHours,
+    });
     return {
       status: "error",
-      message: "Please complete the leave type, dates, and requested hours.",
+      message: getLeaveSubmissionErrorMessage(validationFailure),
+    };
+  }
+  if (!employee) {
+    return {
+      status: "error",
+      message: getLeaveSubmissionErrorMessage("employee-not-linked"),
     };
   }
 
@@ -677,14 +767,40 @@ export async function submitLeaveRequestFormAction(
     .eq("id", leaveTypeId)
     .maybeSingle();
 
-  if (
-    leaveTypeError ||
-    !leaveType?.is_active ||
-    !EMPLOYEE_FILED_LEAVE_TYPE_NAMES.includes(leaveType.name)
-  ) {
+  if (leaveTypeError) {
+    logLeaveSubmissionFailure("leave-type-load-failed", {
+      employeeId: employee.id,
+      leaveTypeId,
+      code: leaveTypeError.code,
+      message: leaveTypeError.message,
+    });
     return {
       status: "error",
-      message: "Please choose Sick Leave, Vacation Leave, Emergency Leave, or Floating Leave.",
+      message: getLeaveSubmissionErrorMessage("leave-type-load-failed"),
+    };
+  }
+
+  if (!leaveType) {
+    logLeaveSubmissionFailure("leave-type-not-found", {
+      employeeId: employee.id,
+      leaveTypeId,
+    });
+    return {
+      status: "error",
+      message: getLeaveSubmissionErrorMessage("leave-type-not-found"),
+    };
+  }
+
+  if (!leaveType.is_active || !EMPLOYEE_FILED_LEAVE_TYPE_NAMES.includes(leaveType.name)) {
+    logLeaveSubmissionFailure("invalid-leave-type", {
+      employeeId: employee.id,
+      leaveTypeId,
+      leaveTypeName: leaveType.name,
+      isActive: leaveType.is_active,
+    });
+    return {
+      status: "error",
+      message: getLeaveSubmissionErrorMessage("invalid-leave-type"),
     };
   }
 
@@ -710,9 +826,18 @@ export async function submitLeaveRequestFormAction(
   const { data: duplicateRows, error: duplicateError } = await duplicateQuery;
 
   if (duplicateError) {
+    logLeaveSubmissionFailure("duplicate-check-failed", {
+      employeeId: employee.id,
+      leaveTypeId,
+      startDate,
+      endDate,
+      requestedHours,
+      code: duplicateError.code,
+      message: duplicateError.message,
+    });
     return {
       status: "error",
-      message: "We could not confirm whether this request was already submitted. Please try again.",
+      message: getLeaveSubmissionErrorMessage("duplicate-check-failed"),
     };
   }
 
@@ -753,18 +878,36 @@ export async function submitLeaveRequestFormAction(
     .maybeSingle();
 
   if (error) {
+    logLeaveSubmissionFailure("request-save-failed", {
+      employeeId: employee.id,
+      leaveTypeId,
+      startDate,
+      endDate,
+      requestedHours,
+      initialStatus,
+      code: error.code,
+      message: error.message,
+    });
     return {
       status: "error",
-      message: "That request could not be submitted. Please check the form and try again.",
+      message: getLeaveSubmissionErrorMessage("request-save-failed"),
     };
   }
 
   const requestId = (request as { id?: string } | null)?.id;
 
   if (!requestId) {
+    logLeaveSubmissionFailure("request-confirm-failed", {
+      employeeId: employee.id,
+      leaveTypeId,
+      startDate,
+      endDate,
+      requestedHours,
+      initialStatus,
+    });
     return {
       status: "error",
-      message: "That request could not be completed. Please try again.",
+      message: getLeaveSubmissionErrorMessage("request-confirm-failed"),
     };
   }
 
@@ -1119,6 +1262,88 @@ async function reservePendingLeaveHours({
   return { ok: true };
 }
 
+function getLeaveSubmissionValidationFailure({
+  employee,
+  leaveTypeId,
+  startDate,
+  endDate,
+  requestedHours,
+}: {
+  employee: CurrentEmployee | null;
+  leaveTypeId: string;
+  startDate: string;
+  endDate: string;
+  requestedHours: number;
+}): LeaveSubmissionFailureReason | null {
+  if (!employee) return "employee-not-linked";
+  if (!leaveTypeId) return "missing-leave-type";
+  if (!isValidDateInput(startDate) || !isValidDateInput(endDate)) {
+    return "missing-dates";
+  }
+  if (startDate > endDate) return "invalid-date-range";
+  if (requestedHours <= 0) return "missing-hours";
+
+  return null;
+}
+
+function isValidDateInput(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+
+  const [year, month, day] = value.split("-").map((part) => Number.parseInt(part, 10));
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function getLeaveSubmissionErrorMessage(reason: LeaveSubmissionFailureReason) {
+  if (reason === "employee-not-linked") {
+    return "Your account could not be linked to an employee record.";
+  }
+  if (reason === "missing-leave-type") {
+    return "Please select a leave type.";
+  }
+  if (reason === "missing-dates") {
+    return "Please enter a valid start and end date.";
+  }
+  if (reason === "invalid-date-range") {
+    return "Start date cannot be after end date.";
+  }
+  if (reason === "missing-hours") {
+    return "Please enter requested hours.";
+  }
+  if (reason === "leave-type-load-failed") {
+    return "We could not verify the leave type. Please try again or contact an administrator.";
+  }
+  if (reason === "leave-type-not-found") {
+    return "Please select a valid leave type.";
+  }
+  if (reason === "invalid-leave-type") {
+    return "Please choose Sick Leave, Vacation Leave, Emergency Leave, or Floating Leave.";
+  }
+  if (reason === "duplicate-check-failed") {
+    return "We could not confirm whether this request was already submitted. Please try again.";
+  }
+  if (reason === "request-confirm-failed") {
+    return "The request was saved but could not be confirmed. Please contact an administrator.";
+  }
+
+  return "The request could not be saved. Please contact an administrator.";
+}
+
+function logLeaveSubmissionFailure(
+  reason: LeaveSubmissionFailureReason,
+  metadata: Record<string, unknown>,
+) {
+  console.warn("Leave request submission failed", {
+    reason,
+    ...metadata,
+  });
+}
+
 function getBalanceReservationErrorCode(reason: BalanceReservationFailureReason) {
   if (reason === "missing-balance-row") return "balance-missing-row";
   if (reason === "insufficient-balance") return "balance-insufficient";
@@ -1225,7 +1450,7 @@ async function deleteUnreservedLeaveRequest({
     })
     .eq("id", requestId)
     .eq("employee_id", employeeId)
-    .eq("status", "pending_supervisor");
+    .in("status", ["pending_supervisor", "pending_admin"]);
 
   if (error) {
     console.warn("Unreserved leave request cleanup failed", {

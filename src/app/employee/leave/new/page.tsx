@@ -70,6 +70,50 @@ function StatusMessage({ error }: { error?: string }) {
 }
 
 function getErrorMessage(error: string) {
+  if (error === "employee-not-linked") {
+    return "Your account could not be linked to an employee record.";
+  }
+
+  if (error === "missing-leave-type") {
+    return "Please select a leave type.";
+  }
+
+  if (error === "missing-dates") {
+    return "Please enter a valid start and end date.";
+  }
+
+  if (error === "invalid-date-range") {
+    return "Start date cannot be after end date.";
+  }
+
+  if (error === "missing-hours") {
+    return "Please enter requested hours.";
+  }
+
+  if (error === "leave-type-load-failed") {
+    return "We could not verify the leave type. Please try again or contact an administrator.";
+  }
+
+  if (error === "leave-type-not-found") {
+    return "Please select a valid leave type.";
+  }
+
+  if (error === "invalid-leave-type") {
+    return "Please choose Sick Leave, Vacation Leave, Emergency Leave, or Floating Leave.";
+  }
+
+  if (error === "duplicate-check-failed") {
+    return "We could not confirm whether this request was already submitted. Please try again.";
+  }
+
+  if (error === "request-save-failed") {
+    return "The request could not be saved. Please contact an administrator.";
+  }
+
+  if (error === "request-confirm-failed") {
+    return "The request was saved but could not be confirmed. Please contact an administrator.";
+  }
+
   if (error === "balance-reserve-failed") {
     return "Your leave request was not submitted because the balance could not be reserved. Please try again or contact an administrator.";
   }
@@ -90,5 +134,5 @@ function getErrorMessage(error: string) {
     return "Your leave request needs admin review because the balance could not be reserved and the pending request could not be cleaned up.";
   }
 
-  return "That request could not be submitted. Please check the form and try again.";
+  return "The leave request page could not show the exact error. Please try again or contact an administrator.";
 }
