@@ -1,7 +1,7 @@
 import {
   cancelScheduleAdjustmentAction,
-  createScheduleAdjustmentAction,
 } from "@/lib/admin/schedule-adjustment-actions";
+import { ScheduleAdjustmentForm } from "@/components/admin/schedule-adjustment-form";
 import { isEligibleActiveTytanEmployee } from "@/lib/employees/filters";
 import type { ScheduleAdjustmentType } from "@/lib/schedule/adjustments";
 import { createClient } from "@/lib/supabase/server";
@@ -58,13 +58,14 @@ export default async function AdminScheduleAdjustmentsPage({
   );
   const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
   const adjustments = (adjustmentData ?? []) as ScheduleAdjustmentRow[];
+  const linkedGroupCounts = getLinkedGroupCounts(adjustments);
   const error = employeeError?.message ?? adjustmentError?.message;
 
   return (
     <div className="grid gap-6">
       <PageHeader
         title="Schedule Adjustments"
-        description="Create one-time operational workdate overrides for temporary day-off swaps, offsets, and payroll handling."
+        description="Use this when someone temporarily changes their workday or day off for one date only. This affects attendance, leave, and payroll for that date, but does not change the employee's permanent schedule."
       />
 
       <StatusMessage success={params.success} error={params.error ?? error} />
@@ -75,60 +76,16 @@ export default async function AdminScheduleAdjustmentsPage({
             New one-time adjustment
           </h2>
           <p className="mt-1 max-w-3xl text-sm text-zinc-600">
-            This only changes the employee&apos;s schedule for the selected work
-            date. It does not change their permanent schedule.
+            Choose the kind of temporary change, then fill in only the dates
+            needed for that change.
           </p>
         </div>
-        <form
-          action={createScheduleAdjustmentAction}
-          className="grid gap-4 lg:grid-cols-4"
-        >
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
-            Employee
-            <select name="employee_id" required className={fieldClassName}>
-              <option value="">Choose employee</option>
-              {employees.map((employee) => (
-                <option key={employee.id} value={employee.id}>
-                  {employee.full_name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
-            Operational work date
-            <input name="work_date" type="date" required className={fieldClassName} />
-          </label>
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
-            Adjustment type
-            <select name="adjustment_type" required className={fieldClassName}>
-              <option value="">Choose type</option>
-              <option value="one_time_day_off">One-time day off</option>
-              <option value="one_time_workday">One-time workday</option>
-            </select>
-          </label>
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
-            Linked group ID
-            <input
-              name="linked_group_id"
-              placeholder="Optional UUID"
-              className={fieldClassName}
-            />
-          </label>
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d] lg:col-span-4">
-            Reason / notes
-            <textarea
-              name="reason"
-              rows={3}
-              placeholder="Example: One-week day-off offset. Monday becomes workday; Friday becomes day off."
-              className="rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 py-2 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30"
-            />
-          </label>
-          <div className="lg:col-span-4">
-            <button className="rounded-lg bg-[#f2d300] px-4 py-2 text-sm font-bold text-[#001f4d] transition hover:bg-[#ffe45c]">
-              Create adjustment
-            </button>
-          </div>
-        </form>
+        <ScheduleAdjustmentForm
+          employees={employees.map((employee) => ({
+            id: employee.id,
+            fullName: employee.full_name,
+          }))}
+        />
       </section>
 
       <section className="rounded-lg border border-[#efe6b6] bg-white shadow-sm">
@@ -145,11 +102,12 @@ export default async function AdminScheduleAdjustmentsPage({
               <thead className="bg-[#001f4d] text-xs uppercase text-white">
                 <tr>
                   <th className="px-5 py-3">Employee</th>
-                  <th className="px-5 py-3">Work date</th>
-                  <th className="px-5 py-3">Type</th>
+                  <th className="px-5 py-3">Date</th>
+                  <th className="px-5 py-3">Adjustment</th>
                   <th className="px-5 py-3">Reason</th>
                   <th className="px-5 py-3">Status</th>
                   <th className="px-5 py-3">Created</th>
+                  <th className="px-5 py-3">Group</th>
                   <th className="px-5 py-3">Action</th>
                 </tr>
               </thead>
@@ -166,11 +124,6 @@ export default async function AdminScheduleAdjustmentsPage({
                         <p className="mt-1 text-xs text-zinc-500">
                           {employee?.work_email ?? adjustment.employee_id}
                         </p>
-                        {adjustment.linked_group_id ? (
-                          <p className="mt-1 text-[11px] text-zinc-400">
-                            Group: {adjustment.linked_group_id}
-                          </p>
-                        ) : null}
                       </td>
                       <td className="px-5 py-4 font-semibold text-zinc-700">
                         {adjustment.work_date}
@@ -186,6 +139,9 @@ export default async function AdminScheduleAdjustmentsPage({
                       </td>
                       <td className="px-5 py-4 text-zinc-600">
                         {formatDateTime(adjustment.created_at)}
+                      </td>
+                      <td className="px-5 py-4 text-zinc-600">
+                        {getGroupLabel(adjustment, linkedGroupCounts)}
                       </td>
                       <td className="px-5 py-4">
                         {adjustment.status === "active" ? (
@@ -278,9 +234,34 @@ function AdjustmentTypeBadge({ type }: { type: ScheduleAdjustmentType }) {
           : "border-emerald-200 bg-emerald-50 text-emerald-800"
       }`}
     >
-      {isDayOff ? "One-time day off" : "One-time workday"}
+      {isDayOff ? "Adjusted Day Off" : "Adjusted Workday"}
     </span>
   );
+}
+
+function getLinkedGroupCounts(adjustments: ScheduleAdjustmentRow[]) {
+  const counts = new Map<string, number>();
+
+  for (const adjustment of adjustments) {
+    if (!adjustment.linked_group_id) continue;
+    counts.set(
+      adjustment.linked_group_id,
+      (counts.get(adjustment.linked_group_id) ?? 0) + 1,
+    );
+  }
+
+  return counts;
+}
+
+function getGroupLabel(
+  adjustment: ScheduleAdjustmentRow,
+  linkedGroupCounts: Map<string, number>,
+) {
+  if (!adjustment.linked_group_id) return "Single adjustment";
+
+  const count = linkedGroupCounts.get(adjustment.linked_group_id) ?? 1;
+
+  return count > 1 ? "Linked offset" : "Linked adjustment";
 }
 
 function StatusBadge({ status }: { status: "active" | "cancelled" }) {
@@ -313,6 +294,3 @@ function formatDateTime(value: string | null) {
     minute: "2-digit",
   }).format(new Date(value));
 }
-
-const fieldClassName =
-  "h-11 w-full rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30";
