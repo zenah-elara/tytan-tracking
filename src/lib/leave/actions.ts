@@ -656,23 +656,20 @@ export async function submitLeaveRequestAction(formData: FormData) {
   }
 
   const initialStatus = await getInitialLeaveRequestStatus(employee);
-  const { data: request, error } = await supabase
-    .from("leave_requests")
-    .insert({
-      employee_id: employee.id,
-      leave_type_id: leaveTypeId,
-      start_date: startDate,
-      end_date: endDate,
-      total_hours: requestedHours,
-      reason,
-      status: initialStatus,
-    })
-    .select("id")
-    .maybeSingle();
+  const { requestId, error } = await insertOwnLeaveRequest({
+    employee,
+    leaveTypeId,
+    startDate,
+    endDate,
+    requestedHours,
+    reason,
+    initialStatus,
+  });
 
   if (error) {
     logLeaveSubmissionFailure("request-save-failed", {
       employeeId: employee.id,
+      employeeEmail: employee.work_email,
       leaveTypeId,
       startDate,
       endDate,
@@ -684,11 +681,10 @@ export async function submitLeaveRequestAction(formData: FormData) {
     redirectWithStatus(EMPLOYEE_NEW_LEAVE_PATH, "error", "request-save-failed");
   }
 
-  const requestId = (request as { id?: string } | null)?.id;
-
   if (!requestId) {
     logLeaveSubmissionFailure("request-confirm-failed", {
       employeeId: employee.id,
+      employeeEmail: employee.work_email,
       leaveTypeId,
       startDate,
       endDate,
@@ -898,23 +894,20 @@ export async function submitLeaveRequestFormAction(
   }
 
   const initialStatus = await getInitialLeaveRequestStatus(employee);
-  const { data: request, error } = await supabase
-    .from("leave_requests")
-    .insert({
-      employee_id: employee.id,
-      leave_type_id: leaveTypeId,
-      start_date: startDate,
-      end_date: endDate,
-      total_hours: requestedHours,
-      reason,
-      status: initialStatus,
-    })
-    .select("id")
-    .maybeSingle();
+  const { requestId, error } = await insertOwnLeaveRequest({
+    employee,
+    leaveTypeId,
+    startDate,
+    endDate,
+    requestedHours,
+    reason,
+    initialStatus,
+  });
 
   if (error) {
     logLeaveSubmissionFailure("request-save-failed", {
       employeeId: employee.id,
+      employeeEmail: employee.work_email,
       leaveTypeId,
       startDate,
       endDate,
@@ -929,11 +922,10 @@ export async function submitLeaveRequestFormAction(
     };
   }
 
-  const requestId = (request as { id?: string } | null)?.id;
-
   if (!requestId) {
     logLeaveSubmissionFailure("request-confirm-failed", {
       employeeId: employee.id,
+      employeeEmail: employee.work_email,
       leaveTypeId,
       startDate,
       endDate,
@@ -1297,6 +1289,55 @@ async function reservePendingLeaveHours({
   return { ok: true };
 }
 
+async function insertOwnLeaveRequest({
+  employee,
+  leaveTypeId,
+  startDate,
+  endDate,
+  requestedHours,
+  reason,
+  initialStatus,
+}: {
+  employee: CurrentEmployee;
+  leaveTypeId: string;
+  startDate: string;
+  endDate: string;
+  requestedHours: number;
+  reason: string | null;
+  initialStatus: LeaveRequestStatus;
+}) {
+  const supabase = await getLeaveRequestWriteClient();
+
+  if (!supabase) {
+    return {
+      requestId: null,
+      error: {
+        code: "admin-client-unavailable",
+        message: "Leave request write client unavailable.",
+      },
+    };
+  }
+
+  const { data, error } = await supabase
+    .from("leave_requests")
+    .insert({
+      employee_id: employee.id,
+      leave_type_id: leaveTypeId,
+      start_date: startDate,
+      end_date: endDate,
+      total_hours: requestedHours,
+      reason,
+      status: initialStatus,
+    })
+    .select("id")
+    .maybeSingle();
+
+  return {
+    requestId: (data as { id?: string } | null)?.id ?? null,
+    error,
+  };
+}
+
 function getLeaveSubmissionValidationFailure({
   employee,
   leaveTypeId,
@@ -1457,10 +1498,18 @@ function logLeaveBalanceReservationFailure(
 }
 
 async function getLeaveBalanceWriteClient() {
+  return getAdminWriteClient("Leave balance write client unavailable");
+}
+
+async function getLeaveRequestWriteClient() {
+  return getAdminWriteClient("Leave request write client unavailable");
+}
+
+async function getAdminWriteClient(logMessage: string) {
   try {
     return createAdminClient();
   } catch (error) {
-    console.warn("Leave balance write client unavailable", {
+    console.warn(logMessage, {
       message: error instanceof Error ? error.message : "Unknown error",
     });
     return null;
@@ -1518,7 +1567,10 @@ async function deleteUnreservedLeaveRequest({
   requestId: string;
   employeeId: string;
 }) {
-  const supabase = await createClient();
+  const supabase = await getLeaveRequestWriteClient();
+
+  if (!supabase) return false;
+
   const { error } = await supabase
     .from("leave_requests")
     .update({
