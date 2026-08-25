@@ -12,6 +12,7 @@ import { CompanyAnnouncementCard } from "@/components/dashboard/company-announce
 import { getManagerScope } from "@/lib/auth/manager-scope";
 import { getActiveCompanyAnnouncements } from "@/lib/announcements/queries";
 import { isEligibleActiveTytanEmployee, isRealTytanEmployee } from "@/lib/employees/filters";
+import type { ScheduleAdjustmentRow } from "@/lib/schedule/adjustments";
 import { getMonthlyRosterDayOffLabel } from "@/lib/schedule/monthly-day-off";
 import type { ClockSessionStatus } from "@/types/clock";
 import { createClient } from "@/lib/supabase/server";
@@ -118,6 +119,7 @@ export default async function ManagerPage() {
     { data: dayOffData },
     { data: scheduleAssignmentData },
     { data: scheduleData },
+    { data: scheduleAdjustmentData },
     announcements,
   ] = await Promise.all([
     supabase
@@ -147,6 +149,11 @@ export default async function ManagerPage() {
       .select("id,employee_id,schedule_id,effective_from,effective_to,is_primary")
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,name,shift_start,shift_end"),
+    supabase
+      .from("schedule_adjustments")
+      .select("employee_id,work_date,adjustment_type,status,reason,linked_group_id")
+      .eq("status", "active")
+      .limit(1000),
     getActiveCompanyAnnouncements(),
   ]);
   const employees = ((employeeData ?? []) as EmployeeRow[]).filter(isRealTytanEmployee);
@@ -158,6 +165,7 @@ export default async function ManagerPage() {
   const scheduleAssignments =
     (scheduleAssignmentData ?? []) as ScheduleAssignmentRow[];
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
+  const scheduleAdjustments = (scheduleAdjustmentData ?? []) as ScheduleAdjustmentRow[];
   const today = getDefaultOperationalDate(schedules);
   const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
   const scopeEmployeeIds = new Set(scope.employeeIds);
@@ -182,6 +190,9 @@ export default async function ManagerPage() {
   );
   const scopedDayOffRosters = dayOffRosters.filter((row) =>
     scopedEmployeeIds.has(row.employeeid),
+  );
+  const scopedScheduleAdjustments = scheduleAdjustments.filter((adjustment) =>
+    scopedEmployeeIds.has(adjustment.employee_id),
   );
   const activeEmployees = scopedEmployees.filter(isEligibleActiveTytanEmployee);
   const departmentMap = new Map(
@@ -231,6 +242,7 @@ export default async function ManagerPage() {
     today,
     scheduleAssignments: scopedScheduleAssignments,
     schedules,
+    scheduleAdjustments: scopedScheduleAdjustments,
   });
   const clockedInToday = countUniqueEmployees(scopedSessions.filter((session) =>
     session.status === "completed" ||

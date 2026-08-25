@@ -1,4 +1,8 @@
 import { getManilaWeekday, isEmployeeRestDay } from "@/lib/schedule/monthly-day-off";
+import {
+  getEffectiveWorkdayStatus,
+  type ScheduleAdjustmentRow,
+} from "@/lib/schedule/adjustments";
 
 type AvailabilityEmployee = {
   id: string;
@@ -73,6 +77,7 @@ export function buildAvailabilitySummary({
   leaveRequests,
   leaveTypes,
   today,
+  scheduleAdjustments = [],
 }: {
   employees: AvailabilityEmployee[];
   departments: AvailabilityDepartment[];
@@ -82,30 +87,52 @@ export function buildAvailabilitySummary({
   today: string;
   scheduleAssignments?: AvailabilityScheduleAssignment[];
   schedules?: AvailabilityWorkSchedule[];
+  scheduleAdjustments?: ScheduleAdjustmentRow[];
 }): AvailabilitySummary {
   const departmentMap = new Map(
     departments.map((department) => [department.id, department.name]),
   );
   const leaveTypeMap = new Map(leaveTypes.map((type) => [type.id, type.name]));
   const weekday = getManilaWeekday(today);
+  const leaveRequestsForToday = leaveRequests.filter(
+    (request) =>
+      request.status === "approved" &&
+      request.start_date <= today &&
+      request.end_date >= today,
+  );
+  const leaveEmployeeIds = new Set(
+    leaveRequestsForToday.map((request) => request.employee_id),
+  );
   const restDayItems = employees
-    .filter((employee) => isEmployeeRestDay(employee.id, today, dayOffRosters))
-    .map((employee) =>
-      buildAvailabilityItem({
+    .map((employee) => {
+      const effectiveStatus = getEffectiveWorkdayStatus({
+        employeeId: employee.id,
+        workDate: today,
+        adjustments: scheduleAdjustments,
+        hasApprovedLeave: leaveEmployeeIds.has(employee.id),
+        isRosterDayOff: isEmployeeRestDay(employee.id, today, dayOffRosters),
+      });
+
+      if (
+        effectiveStatus.status !== "day_off" ||
+        effectiveStatus.source === "approved_leave"
+      ) {
+        return null;
+      }
+
+      return buildAvailabilityItem({
         employee,
         departmentMap,
         status: "Rest Day",
-        detail: weekday,
+        detail:
+          effectiveStatus.source === "schedule_adjustment"
+            ? "Adjusted Day Off"
+            : weekday,
         key: `rest-day-${employee.id}-${today}`,
-      }),
-    );
-  const leaveItems = leaveRequests
-    .filter(
-      (request) =>
-        request.status === "approved" &&
-        request.start_date <= today &&
-        request.end_date >= today,
-    )
+      });
+    })
+    .filter((item): item is AvailabilityItem => Boolean(item));
+  const leaveItems = leaveRequestsForToday
     .map((request) => {
       const employee = employees.find((candidate) => candidate.id === request.employee_id);
 
@@ -212,6 +239,9 @@ function AvailabilityGroup({
               <div>
                 <p className="font-bold text-[#001f4d]">{item.employeeName}</p>
                 <p className="mt-1 text-xs text-zinc-500">{item.departmentName}</p>
+                <p className="mt-1 text-xs font-semibold text-zinc-600">
+                  {item.detail}
+                </p>
                 {item.dateRange ? (
                   <p className="mt-1 text-xs text-zinc-500">{item.dateRange}</p>
                 ) : null}

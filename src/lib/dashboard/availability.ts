@@ -7,6 +7,7 @@ import {
   isEligibleActiveTytanEmployee,
   isRealTytanEmployee,
 } from "@/lib/employees/filters";
+import type { ScheduleAdjustmentRow } from "@/lib/schedule/adjustments";
 import { getSupabaseAdminConfigStatus } from "@/lib/supabase/config";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -80,6 +81,7 @@ async function loadDashboardAvailabilitySummary() {
     dayOffResult,
     scheduleAssignmentResult,
     scheduleResult,
+    scheduleAdjustmentResult,
   ] = await Promise.all([
     supabase
       .from("employees")
@@ -102,6 +104,11 @@ async function loadDashboardAvailabilitySummary() {
       .select("employee_id,schedule_id,effective_from,effective_to,is_primary")
       .order("effective_from", { ascending: false }),
     supabase.from("work_schedules").select("id,shift_start,shift_end"),
+    supabase
+      .from("schedule_adjustments")
+      .select("employee_id,work_date,adjustment_type,status,reason,linked_group_id")
+      .eq("status", "active")
+      .limit(1000),
   ]);
   logQueryError("employees", employeeResult.error);
   logQueryError("departments", departmentResult.error);
@@ -110,6 +117,7 @@ async function loadDashboardAvailabilitySummary() {
   logQueryError("monthly_day_off_rosters", dayOffResult.error);
   logQueryError("employee_schedule_assignments", scheduleAssignmentResult.error);
   logQueryError("work_schedules", scheduleResult.error);
+  logQueryError("schedule_adjustments", scheduleAdjustmentResult.error);
 
   const employeeData = employeeResult.data;
   const departmentData = departmentResult.data;
@@ -118,6 +126,7 @@ async function loadDashboardAvailabilitySummary() {
   const dayOffData = dayOffResult.data;
   const scheduleAssignmentData = scheduleAssignmentResult.data;
   const scheduleData = scheduleResult.data;
+  const scheduleAdjustmentData = scheduleAdjustmentResult.data;
   const employees = ((employeeData ?? []) as EmployeeRow[])
     .filter(isRealTytanEmployee)
     .filter(isEligibleActiveTytanEmployee);
@@ -135,6 +144,9 @@ async function loadDashboardAvailabilitySummary() {
       employeeIds.has(assignment.employee_id),
     );
   const schedules = (scheduleData ?? []) as WorkScheduleRow[];
+  const scheduleAdjustments = ((scheduleAdjustmentData ?? []) as ScheduleAdjustmentRow[]).filter(
+    (adjustment) => employeeIds.has(adjustment.employee_id),
+  );
   const today = getDefaultOperationalDate(schedules);
 
   return {
@@ -148,6 +160,7 @@ async function loadDashboardAvailabilitySummary() {
       today,
       scheduleAssignments,
       schedules,
+      scheduleAdjustments,
     }),
   };
 }
@@ -180,6 +193,7 @@ function createEmptyAvailabilitySummary() {
       today,
       scheduleAssignments: [],
       schedules: [],
+      scheduleAdjustments: [],
     }),
   };
 }
