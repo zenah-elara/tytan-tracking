@@ -80,7 +80,7 @@ export default async function AdminEmployeesPage({
   );
 
   return (
-    <div className="grid gap-6">
+    <div className="grid min-w-0 max-w-full gap-6">
       <PageHeader
         eyebrow="Admin setup"
         title="Employees"
@@ -89,7 +89,7 @@ export default async function AdminEmployeesPage({
 
       <StatusMessage success={params.success} error={params.error ?? error?.message} />
 
-      <section className="grid gap-4 rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
+      <section className="grid min-w-0 gap-4 overflow-hidden rounded-lg border border-[#efe6b6] bg-white p-5 shadow-sm">
         <div>
           <h2 className="text-base font-semibold text-[#001f4d]">
             Create employee record
@@ -100,12 +100,15 @@ export default async function AdminEmployeesPage({
           </p>
         </div>
 
-        <form action={createEmployeeRecordAction} className="grid gap-4 lg:grid-cols-3">
+        <form
+          action={createEmployeeRecordAction}
+          className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-3"
+        >
           <FormField label="Full name" name="full_name" required />
           <FormField label="Work email" name="work_email" type="email" required />
           <FormField label="Employee number" name="employee_number" />
 
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+          <label className="grid min-w-0 gap-2 text-sm font-semibold text-[#001f4d]">
             Department
             <select name="department_id" className={selectClassName}>
               <option value="">Unassigned</option>
@@ -119,7 +122,7 @@ export default async function AdminEmployeesPage({
             </select>
           </label>
 
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+          <label className="grid min-w-0 gap-2 text-sm font-semibold text-[#001f4d]">
             Job role
             <select name="job_role_id" className={selectClassName}>
               <option value="">Unassigned</option>
@@ -133,7 +136,7 @@ export default async function AdminEmployeesPage({
             </select>
           </label>
 
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+          <label className="grid min-w-0 gap-2 text-sm font-semibold text-[#001f4d]">
             Manager
             <select name="manager_id" className={selectClassName}>
               <option value="">No manager</option>
@@ -145,7 +148,7 @@ export default async function AdminEmployeesPage({
             </select>
           </label>
 
-          <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+          <label className="grid min-w-0 gap-2 text-sm font-semibold text-[#001f4d]">
             Employment status
             <select name="employment_status" className={selectClassName}>
               {EMPLOYMENT_STATUSES.map((status) => (
@@ -159,7 +162,7 @@ export default async function AdminEmployeesPage({
           <FormField label="Start date" name="start_date" type="date" />
           <FormField label="Timezone" name="timezone" defaultValue="Asia/Manila" />
 
-          <div className="lg:col-span-3">
+          <div className="min-w-0 md:col-span-2 xl:col-span-3">
             <button className="h-11 rounded-lg bg-[#f2d300] px-4 text-sm font-bold text-[#001f4d] transition hover:bg-[#ffe45c]">
               Add employee record
             </button>
@@ -167,7 +170,7 @@ export default async function AdminEmployeesPage({
         </form>
       </section>
 
-      <section className="rounded-lg border border-zinc-200 bg-white shadow-sm">
+      <section className="min-w-0 max-w-full overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
         <div className="border-b border-zinc-200 px-5 py-4">
           <h2 className="text-base font-semibold text-zinc-950">
             Employee list
@@ -177,8 +180,8 @@ export default async function AdminEmployeesPage({
         {employees.length === 0 ? (
           <EmptyState message="No employee records found yet." />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
+          <div className="max-w-full overflow-x-auto overscroll-x-contain">
+            <table className="w-max min-w-full text-left text-sm">
               <thead className="bg-[#fffdf2] text-xs uppercase text-zinc-500">
                 <tr>
                   <th className="px-5 py-3">Employee #</th>
@@ -266,7 +269,7 @@ export default async function AdminEmployeesPage({
 }
 
 const selectClassName =
-  "h-11 rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30";
+  "h-11 w-full min-w-0 rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30";
 
 function PageHeader({
   eyebrow,
@@ -302,14 +305,14 @@ function FormField({
   defaultValue?: string;
 }) {
   return (
-    <label className="grid gap-2 text-sm font-semibold text-[#001f4d]">
+    <label className="grid min-w-0 gap-2 text-sm font-semibold text-[#001f4d]">
       {label}
       <input
         name={name}
         type={type}
         required={required}
         defaultValue={defaultValue}
-        className="h-11 rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30"
+        className="h-11 w-full min-w-0 rounded-lg border border-zinc-300 bg-[#fffdf2] px-3 text-sm font-normal text-zinc-950 outline-none focus:border-[#001f4d] focus:ring-4 focus:ring-[#f2d300]/30"
       />
     </label>
   );
