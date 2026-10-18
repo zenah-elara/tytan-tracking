@@ -1,9 +1,4 @@
-import {
-  clockInAction,
-  clockOutAction,
-  endBreakAction,
-  startBreakAction,
-} from "@/lib/clock/actions";
+import { EmployeeClockActions } from "@/components/clock/employee-clock-actions";
 import {
   getCompletedCreditedClockMinutes,
   getRenderedGrossMinutes,
@@ -17,7 +12,7 @@ import {
   hasExplicitMonthlyDayOffRoster,
 } from "@/lib/schedule/monthly-day-off";
 import { createClient } from "@/lib/supabase/server";
-import type { ClockSessionStatus } from "@/types/clock";
+import type { ClockSessionStatus, ClockUiState } from "@/types/clock";
 
 type PageProps = {
   searchParams: Promise<{ success?: string; error?: string }>;
@@ -63,9 +58,6 @@ type DayOffRosterRow = {
   month: string;
   dayoff: string;
 };
-
-type ClockUiState = "not_clocked_in" | "active" | "on_break" | "completed" | "voided";
-type ClockButtonVariant = "start" | "primary" | "secondary" | "neutral";
 
 export default async function EmployeeClockPage({ searchParams }: PageProps) {
   const params = await searchParams;
@@ -241,7 +233,7 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
               </p>
             ) : null}
           </div>
-          <ClockActions session={currentSession} state={clockState} />
+          <EmployeeClockActions initialState={clockState} />
         </div>
       </section>
 
@@ -283,77 +275,6 @@ export default async function EmployeeClockPage({ searchParams }: PageProps) {
         )}
       </section>
     </div>
-  );
-}
-
-function ClockActions({
-  session,
-  state,
-}: {
-  session: ClockSessionRow | null;
-  state: ClockUiState;
-}) {
-  const status = session?.status ?? null;
-
-  return (
-    <div className="grid gap-3">
-      <div className="flex flex-wrap gap-3">
-        {!status || status === "voided" ? (
-          <ClockButton action={clockInAction} label="Clock In" variant="start" />
-        ) : null}
-        {status === "completed" ? (
-          <ClockButton
-            action={clockInAction}
-            label="Clock In New Session"
-            variant="neutral"
-          />
-        ) : null}
-        {status === "active" ? (
-          <>
-            <ClockButton action={startBreakAction} label="Start Break" variant="secondary" />
-            <ClockButton action={clockOutAction} label="Clock Out" variant="primary" />
-          </>
-        ) : null}
-        {status === "on_break" ? (
-          <>
-            <ClockButton action={endBreakAction} label="Resume Work" variant="start" />
-            <ClockButton action={clockOutAction} label="Clock Out" variant="primary" />
-          </>
-        ) : null}
-      </div>
-      <p className={`max-w-sm text-sm font-semibold ${getActionHelperClassName(state)}`}>
-        {getActionHelperText(state)}
-      </p>
-    </div>
-  );
-}
-
-function ClockButton({
-  action,
-  label,
-  variant,
-}: {
-  action: () => Promise<void>;
-  label: string;
-  variant: ClockButtonVariant;
-}) {
-  const className = {
-    start:
-      "h-11 rounded-lg bg-[#f2d300] px-4 text-sm font-black text-[#001f4d] shadow-sm transition hover:bg-[#ffe44d]",
-    primary:
-      "h-11 rounded-lg border-2 border-[#f2d300] bg-white px-4 text-sm font-black text-[#001f4d] shadow-sm transition hover:bg-[#fff7bf]",
-    secondary:
-      "h-11 rounded-lg border border-white/50 bg-white/10 px-4 text-sm font-bold text-white transition hover:border-[#f2d300] hover:bg-white/20",
-    neutral:
-      "h-11 rounded-lg border border-[#cdbf73] bg-white px-4 text-sm font-bold text-[#001f4d] transition hover:border-[#f2d300] hover:bg-[#fff7bf]",
-  }[variant];
-
-  return (
-    <form action={action}>
-      <button className={className}>
-        {label}
-      </button>
-    </form>
   );
 }
 
@@ -500,21 +421,6 @@ function getClockStateConfig(state: ClockUiState) {
   >;
 
   return configs[state];
-}
-
-function getActionHelperText(state: ClockUiState) {
-  if (state === "not_clocked_in") return "Use Clock In to start your shift.";
-  if (state === "active") return "Your shift is active. Start a break if needed, or clock out when your shift is complete.";
-  if (state === "on_break") return "Resume work when your break is finished, or clock out if your shift is done.";
-  if (state === "completed") return "Your shift is complete. Start a new session only if you need to clock in again.";
-  return "Start a new session when you are ready to work.";
-}
-
-function getActionHelperClassName(state: ClockUiState) {
-  if (state === "active") return "text-white/85";
-  if (state === "on_break") return "text-[#001f4d]/75";
-  if (state === "completed") return "text-emerald-900/75";
-  return "text-zinc-600";
 }
 
 function getSessionSummaryTitle(

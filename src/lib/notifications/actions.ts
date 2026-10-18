@@ -48,6 +48,8 @@ export async function createOperationalNotification(input: CreateNotificationInp
     return;
   }
 
+  const timingStartedAt = Date.now();
+  const timings: Array<{ stage: string; durationMs: number }> = [];
   const supabase = await createClient();
   const createdAt = new Date().toISOString();
   const row: NotificationRow = {
@@ -68,7 +70,12 @@ export async function createOperationalNotification(input: CreateNotificationInp
     created_at: createdAt,
   };
 
+  let stageStartedAt = Date.now();
   const { error } = await supabase.from("notifications").insert(row);
+  timings.push({
+    stage: "notification_insert",
+    durationMs: Date.now() - stageStartedAt,
+  });
 
   if (error) {
     if (error.code !== "23505") {
@@ -78,23 +85,51 @@ export async function createOperationalNotification(input: CreateNotificationInp
         type: input.type,
       });
     }
+    logNotificationPerformance(input, timingStartedAt, timings, error.code);
     return;
   }
 
   const notification = mapNotificationRow(row);
 
   if (input.deliverToGoogleChat !== false) {
+    stageStartedAt = Date.now();
     await deliverExternalNotification(notification);
+    timings.push({
+      stage: "external_delivery_and_attempt_log",
+      durationMs: Date.now() - stageStartedAt,
+    });
   }
+
+  stageStartedAt = Date.now();
   revalidatePath(ADMIN_NOTIFICATIONS_PATH);
   revalidatePath(MANAGER_NOTIFICATIONS_PATH);
+  timings.push({
+    stage: "notification_revalidate_paths",
+    durationMs: Date.now() - stageStartedAt,
+  });
+  logNotificationPerformance(input, timingStartedAt, timings, "created");
 }
 
 export async function notifyAdminsAndEmployeeManager(
   employeeId: string,
   input: Omit<CreateNotificationInput, "recipientRole" | "recipientEmployeeId">,
+  knownEmployee?: {
+    id: string;
+    full_name: string;
+    work_email: string;
+    manager_id: string | null;
+    department_id: string | null;
+  },
 ) {
-  const employee = await getEmployeeNotificationContext(employeeId);
+  const timingStartedAt = Date.now();
+  const timings: Array<{ stage: string; durationMs: number }> = [];
+  let stageStartedAt = Date.now();
+  const employee =
+    knownEmployee ?? (await getEmployeeNotificationContext(employeeId));
+  timings.push({
+    stage: "notification_audience_employee_lookup",
+    durationMs: Date.now() - stageStartedAt,
+  });
   const metadata = {
     ...(input.metadata ?? {}),
     employee_id: employeeId,
@@ -102,6 +137,7 @@ export async function notifyAdminsAndEmployeeManager(
     employee_email: employee?.work_email ?? "",
   };
 
+  stageStartedAt = Date.now();
   await createOperationalNotification({
     ...input,
     recipientRole: "admin",
@@ -111,8 +147,13 @@ export async function notifyAdminsAndEmployeeManager(
       : undefined,
     deliverToGoogleChat: true,
   });
+  timings.push({
+    stage: "admin_notification_and_google_chat",
+    durationMs: Date.now() - stageStartedAt,
+  });
 
   if (employee?.manager_id) {
+    stageStartedAt = Date.now();
     await createOperationalNotification({
       ...input,
       recipientEmployeeId: employee.manager_id,
@@ -122,7 +163,35 @@ export async function notifyAdminsAndEmployeeManager(
         : undefined,
       deliverToGoogleChat: false,
     });
+    timings.push({
+      stage: "manager_notification",
+      durationMs: Date.now() - stageStartedAt,
+    });
   }
+
+  if (input.category === "clock_activity") {
+    console.info("Clock notification audience performance", {
+      totalDurationMs: Date.now() - timingStartedAt,
+      timings,
+    });
+  }
+}
+
+function logNotificationPerformance(
+  input: CreateNotificationInput,
+  timingStartedAt: number,
+  timings: Array<{ stage: string; durationMs: number }>,
+  outcome: string,
+) {
+  if (input.category !== "clock_activity") return;
+
+  console.info("Clock notification creation performance", {
+    recipientType: input.recipientRole ? "role" : "employee",
+    deliversToGoogleChat: input.deliverToGoogleChat !== false,
+    outcome,
+    totalDurationMs: Date.now() - timingStartedAt,
+    timings,
+  });
 }
 
 export async function getNotificationsForCurrentUser(options?: {
@@ -361,11 +430,15 @@ async function getEmployeeNotificationContext(employeeId: string) {
 }
 
 async function deliverExternalNotification(notification: OperationalNotification) {
+  const timingStartedAt = Date.now();
   const supabase = await createClient();
 
   try {
+    let stageStartedAt = Date.now();
     const result = await sendGoogleChatNotification(notification);
+    const sendDurationMs = Date.now() - stageStartedAt;
 
+    stageStartedAt = Date.now();
     await recordGoogleChatDeliveryAttempt(supabase, notification, {
       status: result.status,
       responseSummary:
@@ -373,6 +446,21 @@ async function deliverExternalNotification(notification: OperationalNotification
           ? "GOOGLE_CHAT_WEBHOOK_URL is not configured"
           : result.responseSummary,
     });
+    const attemptLogDurationMs = Date.now() - stageStartedAt;
+
+    if (notification.category === "clock_activity") {
+      console.info("Clock Google Chat delivery performance", {
+        status: result.status,
+        totalDurationMs: Date.now() - timingStartedAt,
+        timings: [
+          { stage: "google_chat_request", durationMs: sendDurationMs },
+          {
+            stage: "delivery_attempt_insert",
+            durationMs: attemptLogDurationMs,
+          },
+        ],
+      });
+    }
 
     if (result.status === "failed") {
       console.warn("Google Chat notification delivery failed", {
@@ -383,10 +471,23 @@ async function deliverExternalNotification(notification: OperationalNotification
       });
     }
   } catch {
+    const stageStartedAt = Date.now();
     await recordGoogleChatDeliveryAttempt(supabase, notification, {
       status: "failed",
       responseSummary: "Google Chat delivery failed before the request completed",
     });
+    if (notification.category === "clock_activity") {
+      console.info("Clock Google Chat delivery performance", {
+        status: "failed_before_completion",
+        totalDurationMs: Date.now() - timingStartedAt,
+        timings: [
+          {
+            stage: "failure_attempt_insert",
+            durationMs: Date.now() - stageStartedAt,
+          },
+        ],
+      });
+    }
     console.warn("Google Chat notification delivery failed before completion", {
       notificationId: notification.id,
       category: notification.category,

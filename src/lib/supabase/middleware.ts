@@ -6,6 +6,7 @@ import {
 } from "@/lib/supabase/config";
 
 export async function updateSession(request: NextRequest) {
+  const timingStartedAt = Date.now();
   let response = NextResponse.next({ request });
   const configStatus = getSupabaseConfigStatus();
 
@@ -42,6 +43,13 @@ export async function updateSession(request: NextRequest) {
   // Keep middleware conservative: server layouts enforce protected route access
   // while middleware refreshes Supabase auth cookies.
   await supabase.auth.getUser();
+
+  if (request.nextUrl.pathname === "/employee/clock") {
+    console.info("Clock middleware auth performance", {
+      method: request.method,
+      totalDurationMs: Date.now() - timingStartedAt,
+    });
+  }
 
   return response;
 }

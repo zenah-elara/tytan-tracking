@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
 import type { AppRole, AuthUserProfile } from "@/types/auth";
 
@@ -13,7 +14,7 @@ type ProfileRow = {
 
 const APP_ROLE_VALUES = ["employee", "manager", "admin"] as const;
 
-export async function getCurrentUserProfile() {
+export const getCurrentUserProfile = cache(async function getCurrentUserProfile() {
   const supabase = await createClient();
   const {
     data: { user },
@@ -34,7 +35,7 @@ export async function getCurrentUserProfile() {
   }
 
   return mapProfileRow(data as ProfileRow);
-}
+});
 
 export function isAppRole(value: unknown): value is AppRole {
   return (

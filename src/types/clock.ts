@@ -4,6 +4,29 @@ export type ClockSessionStatus =
   | "completed"
   | "voided";
 
+export type ClockActionName =
+  | "clock_in"
+  | "start_break"
+  | "end_break"
+  | "clock_out";
+
+export type ClockUiState =
+  | "not_clocked_in"
+  | "active"
+  | "on_break"
+  | "completed"
+  | "voided";
+
+export type ClockActionState = {
+  status: "idle" | "success" | "error";
+  message: string;
+  action?: ClockActionName;
+  uiState?: ClockUiState;
+  sessionId?: string;
+  requestId?: string;
+  responseTimeMs?: number;
+};
+
 export type AttendanceReviewStatus = "complete" | "needs_review";
 
 export type AttendanceRecordReview = {
