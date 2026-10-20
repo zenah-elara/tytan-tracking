@@ -1,12 +1,16 @@
 import Link from "next/link";
 import { getCurrentUserProfile } from "@/lib/auth/session";
-import { deleteLeaveRequestAction } from "@/lib/leave/actions";
+import { requestLeaveCancellationAction } from "@/lib/leave/actions";
 import {
   formatLeaveRequestStatus,
   getLeaveApprovalStage,
 } from "@/lib/leave/status-labels";
 import { createClient } from "@/lib/supabase/server";
-import type { LeaveProcessingStatus, LeaveRequestStatus } from "@/types/leave";
+import type {
+  LeaveCancellationStatus,
+  LeaveProcessingStatus,
+  LeaveRequestStatus,
+} from "@/types/leave";
 
 type PageProps = {
   searchParams: Promise<{ success?: string; error?: string }>;
@@ -47,6 +51,16 @@ type LeaveRequestRow = {
   processingstatus: LeaveProcessingStatus;
 };
 
+type LeaveCancellationRow = {
+  id: string;
+  leave_request_id: string;
+  requested_at: string;
+  original_leave_status: string;
+  status: LeaveCancellationStatus;
+  reviewed_at: string | null;
+  review_notes: string | null;
+};
+
 export default async function EmployeeLeavePage({ searchParams }: PageProps) {
   const params = await searchParams;
   const profile = await getCurrentUserProfile();
@@ -61,7 +75,12 @@ export default async function EmployeeLeavePage({ searchParams }: PageProps) {
     );
   }
 
-  const [{ data: balanceData }, { data: requestData }, { data: typeData }] =
+  const [
+    { data: balanceData },
+    { data: requestData },
+    { data: typeData },
+    { data: cancellationData },
+  ] =
     await Promise.all([
       supabase
         .from("leave_balances")
@@ -75,11 +94,29 @@ export default async function EmployeeLeavePage({ searchParams }: PageProps) {
         .neq("status", "deleted")
         .order("submitted_at", { ascending: false }),
       supabase.from("leave_types").select("id,name").order("name"),
+      supabase
+        .from("leave_cancellation_requests")
+        .select(
+          "id,leave_request_id,requested_at,original_leave_status,status,reviewed_at,review_notes",
+        )
+        .eq("requested_by", employee.id)
+        .order("requested_at", { ascending: false }),
     ]);
   const balances = (balanceData ?? []) as LeaveBalanceRow[];
   const requests = (requestData ?? []) as LeaveRequestRow[];
   const leaveTypes = (typeData ?? []) as LeaveTypeRow[];
+  const cancellations = (cancellationData ?? []) as LeaveCancellationRow[];
   const typeNames = new Map(leaveTypes.map((type) => [type.id, type.name]));
+  const cancellationByRequestId = cancellations.reduce(
+    (latestByRequest, cancellation) => {
+      if (!latestByRequest.has(cancellation.leave_request_id)) {
+        latestByRequest.set(cancellation.leave_request_id, cancellation);
+      }
+
+      return latestByRequest;
+    },
+    new Map<string, LeaveCancellationRow>(),
+  );
 
   return (
     <div className="grid gap-6">
@@ -151,8 +188,11 @@ export default async function EmployeeLeavePage({ searchParams }: PageProps) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
-                {requests.map((request) => (
-                  <tr key={request.id}>
+                {requests.map((request) => {
+                  const cancellation = cancellationByRequestId.get(request.id);
+
+                  return (
+                    <tr key={request.id}>
                     <td className="px-5 py-4 font-bold text-[#001f4d]">
                       {typeNames.get(request.leave_type_id) ?? "Leave"}
                     </td>
@@ -163,30 +203,43 @@ export default async function EmployeeLeavePage({ searchParams }: PageProps) {
                       {formatHours(request.total_hours)}
                     </td>
                     <td className="px-5 py-4 text-zinc-600">
-                      <WorkflowStatus request={request} />
+                      <WorkflowStatus
+                        request={request}
+                        cancellation={cancellation}
+                      />
                     </td>
                     <td className="px-5 py-4 text-zinc-600">
                       {request.reason || "No reason provided"}
                     </td>
                     <td className="min-w-40 px-5 py-4 text-zinc-600">
-                      <form action={deleteLeaveRequestAction}>
-                        <input
-                          type="hidden"
-                          name="request_id"
-                          value={request.id}
-                        />
-                        <input
-                          type="hidden"
-                          name="return_to"
-                          value="/employee/leave"
-                        />
-                        <button className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm font-bold text-zinc-700">
-                          Delete
-                        </button>
-                      </form>
+                      {canRequestCancellation(request, cancellation) ? (
+                        <form
+                          action={requestLeaveCancellationAction}
+                          className="grid min-w-56 gap-2"
+                        >
+                          <input
+                            type="hidden"
+                            name="request_id"
+                            value={request.id}
+                          />
+                          <input
+                            name="cancellation_reason"
+                            placeholder="Cancellation reason (optional)"
+                            className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900"
+                          />
+                          <button className="h-10 rounded-lg border border-[#001f4d] bg-white px-3 text-sm font-bold text-[#001f4d]">
+                            Request Cancellation
+                          </button>
+                        </form>
+                      ) : (
+                        <span className="text-xs text-zinc-500">
+                          {getCancellationActionLabel(request, cancellation)}
+                        </span>
+                      )}
                     </td>
-                  </tr>
-                ))}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -250,7 +303,13 @@ function formatLabel(value: string) {
     .join(" ");
 }
 
-function WorkflowStatus({ request }: { request: LeaveRequestRow }) {
+function WorkflowStatus({
+  request,
+  cancellation,
+}: {
+  request: LeaveRequestRow;
+  cancellation?: LeaveCancellationRow;
+}) {
   return (
     <div className="grid gap-1">
       <span className="inline-flex w-fit rounded-full bg-[#001f4d] px-2.5 py-1 text-xs font-bold text-white">
@@ -259,6 +318,7 @@ function WorkflowStatus({ request }: { request: LeaveRequestRow }) {
       <span className="text-xs text-zinc-500">
         {getLeaveApprovalStage(request.status)}
       </span>
+      {cancellation ? <CancellationStatus cancellation={cancellation} /> : null}
       {request.processingstatus !== "notprocessed" ? (
         <span className="text-xs text-zinc-500">
           {formatLabel(request.processingstatus)}
@@ -268,10 +328,69 @@ function WorkflowStatus({ request }: { request: LeaveRequestRow }) {
   );
 }
 
+function CancellationStatus({
+  cancellation,
+}: {
+  cancellation: LeaveCancellationRow;
+}) {
+  const styles =
+    cancellation.status === "pending"
+      ? "bg-amber-100 text-amber-800"
+      : cancellation.status === "approved"
+        ? "bg-emerald-100 text-emerald-800"
+        : "bg-zinc-200 text-zinc-700";
+  const label =
+    cancellation.status === "pending"
+      ? "Cancellation Requested"
+      : cancellation.status === "approved"
+        ? "Cancellation Approved"
+        : "Cancellation Rejected";
+
+  return (
+    <>
+      <span
+        className={`inline-flex w-fit rounded-full px-2.5 py-1 text-xs font-bold ${styles}`}
+      >
+        {label}
+      </span>
+      <span className="text-xs text-zinc-500">
+        Requested {formatDateTime(cancellation.requested_at)}
+      </span>
+      {cancellation.status === "rejected" && cancellation.review_notes ? (
+        <span className="text-xs text-zinc-500">{cancellation.review_notes}</span>
+      ) : null}
+    </>
+  );
+}
+
+function canRequestCancellation(
+  request: LeaveRequestRow,
+  cancellation: LeaveCancellationRow | undefined,
+) {
+  return (
+    (!cancellation || cancellation.status === "rejected") &&
+    ["pending_supervisor", "pending_admin", "approved"].includes(request.status)
+  );
+}
+
+function getCancellationActionLabel(
+  request: LeaveRequestRow,
+  cancellation: LeaveCancellationRow | undefined,
+) {
+  if (cancellation?.status === "pending") return "Waiting for admin review";
+  if (cancellation?.status === "rejected") return "Cancellation rejected";
+  if (cancellation?.status === "approved" || request.status === "cancelled") {
+    return "Cancelled";
+  }
+  return "Cancellation unavailable";
+}
+
 function getSuccessMessage(success: string | undefined) {
   switch (success) {
     case "deleted":
       return "Leave request deleted.";
+    case "cancellation-requested":
+      return "Cancellation requested. Your leave remains unchanged until an admin approves it.";
     case "submitted":
     default:
       return "Leave request submitted.";
@@ -280,13 +399,25 @@ function getSuccessMessage(success: string | undefined) {
 
 function getErrorMessage(error: string) {
   switch (error) {
-    case "delete-not-authorized":
-      return "You can only delete your own leave requests.";
+    case "cancellation-already-requested":
+      return "A cancellation request already exists for this leave.";
+    case "cancellation-not-authorized":
+      return "You can only request cancellation of your own leave.";
+    case "cancellation-not-eligible":
+      return "This leave request is not eligible for cancellation.";
     case "request-not-found":
       return "That leave request could not be found.";
-    case "missing-delete":
-    case "delete-failed":
+    case "missing-cancellation-request":
+    case "cancellation-request-failed":
     default:
       return "That change could not be saved.";
   }
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString("en-PH", {
+    timeZone: "Asia/Manila",
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }

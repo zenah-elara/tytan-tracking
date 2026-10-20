@@ -5,7 +5,10 @@ export type LeaveRequestStatus =
   | "pending_admin"
   | "approved"
   | "rejected"
+  | "cancelled"
   | "deleted";
+
+export type LeaveCancellationStatus = "pending" | "approved" | "rejected";
 
 export type LeaveProcessingStatus =
   | "notprocessed"
@@ -119,4 +122,20 @@ export type LeaveTransaction = {
   notes: string | null;
   createdBy: string | null;
   createdAt: string;
+};
+
+export type LeaveCancellationRequest = {
+  id: string;
+  leaveRequestId: string;
+  requestedBy: string;
+  requestedAt: string;
+  requestReason: string | null;
+  originalLeaveStatus: string;
+  status: LeaveCancellationStatus;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewNotes: string | null;
+  refundedHours: number;
+  createdAt: string;
+  updatedAt: string;
 };

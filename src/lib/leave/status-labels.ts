@@ -10,6 +10,8 @@ export function formatLeaveRequestStatus(status: LeaveRequestStatus) {
       return "Approved";
     case "rejected":
       return "Rejected";
+    case "cancelled":
+      return "Cancelled";
     case "deleted":
       return "Deleted";
   }
@@ -25,6 +27,8 @@ export function getLeaveApprovalStage(status: LeaveRequestStatus) {
       return "Approved";
     case "rejected":
       return "Rejected";
+    case "cancelled":
+      return "Cancelled after admin approval";
     case "deleted":
       return "Deleted";
   }

@@ -1016,6 +1016,26 @@ export async function reviewLeaveRequestAction(formData: FormData) {
   const currentStatus = request.status as LeaveRequestStatus;
   const requestLeaveTypeName = getLeaveTypeNameFromRequest(request);
   const requestedHours = getLeaveRequestHours(request);
+  const { data: pendingCancellation, error: cancellationLookupError } = await supabase
+    .from("leave_cancellation_requests")
+    .select("id")
+    .eq("leave_request_id", requestId)
+    .eq("status", "pending")
+    .maybeSingle();
+
+  if (cancellationLookupError) {
+    console.warn("Pending leave cancellation lookup failed", {
+      requestId,
+      code: cancellationLookupError.code,
+      message: cancellationLookupError.message,
+    });
+    redirectWithStatus(returnPath, "error", "review-failed");
+  }
+
+  if (pendingCancellation) {
+    redirectWithStatus(returnPath, "error", "cancellation-pending");
+  }
+
   let updateValues: Record<string, string | number | null> | null = null;
   let releasePendingAfterUpdate = false;
 
@@ -1138,6 +1158,71 @@ export async function reviewLeaveRequestAction(formData: FormData) {
   redirectWithStatus(returnPath, "success", "reviewed");
 }
 
+export async function requestLeaveCancellationAction(formData: FormData) {
+  const requestId = readRequiredText(formData, "request_id");
+  const reason = readOptionalText(formData, "cancellation_reason");
+
+  if (!requestId) {
+    redirectWithStatus(EMPLOYEE_LEAVE_PATH, "error", "missing-cancellation-request");
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("request_leave_cancellation", {
+    target_leave_request_id: requestId,
+    cancellation_reason: reason,
+  });
+
+  if (error) {
+    console.warn("Leave cancellation request failed", {
+      requestId,
+      code: error.code,
+      message: error.message,
+    });
+    redirectWithStatus(
+      EMPLOYEE_LEAVE_PATH,
+      "error",
+      getCancellationRequestErrorCode(error.message),
+    );
+  }
+
+  revalidateLeavePages();
+  redirectWithStatus(EMPLOYEE_LEAVE_PATH, "success", "cancellation-requested");
+}
+
+export async function reviewLeaveCancellationAction(formData: FormData) {
+  const cancellationId = readRequiredText(formData, "cancellation_id");
+  const decision = readRequiredText(formData, "decision");
+  const notes = readOptionalText(formData, "review_notes");
+
+  if (!cancellationId || !["approve", "reject"].includes(decision)) {
+    redirectWithStatus(ADMIN_LEAVE_APPROVALS_PATH, "error", "missing-cancellation-review");
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("review_leave_cancellation", {
+    target_cancellation_id: cancellationId,
+    cancellation_decision: decision,
+    reviewer_notes: notes,
+  });
+
+  if (error) {
+    console.warn("Leave cancellation review failed", {
+      cancellationId,
+      decision,
+      code: error.code,
+      message: error.message,
+    });
+    redirectWithStatus(ADMIN_LEAVE_APPROVALS_PATH, "error", "cancellation-review-failed");
+  }
+
+  revalidateLeavePages();
+  redirectWithStatus(
+    ADMIN_LEAVE_APPROVALS_PATH,
+    "success",
+    decision === "approve" ? "cancellation-approved" : "cancellation-rejected",
+  );
+}
+
 export async function deleteLeaveRequestAction(formData: FormData) {
   const requestId = readRequiredText(formData, "request_id");
   const returnPath = readLeaveReturnPath(formData);
@@ -1158,8 +1243,7 @@ export async function deleteLeaveRequestAction(formData: FormData) {
     redirectWithStatus(returnPath, "error", "request-not-found");
   }
 
-  const ownsRequest = request.employee_id === actor.id;
-  const canDelete = actor.role === "admin" || ownsRequest;
+  const canDelete = actor.role === "admin";
 
   if (!canDelete || request.status === "deleted") {
     redirectWithStatus(returnPath, "error", "delete-not-authorized");
@@ -1207,6 +1291,19 @@ export async function deleteLeaveRequestAction(formData: FormData) {
 
   revalidateLeavePages();
   redirectWithStatus(returnPath, "success", "deleted");
+}
+
+function getCancellationRequestErrorCode(message: string) {
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes("already exists")) return "cancellation-already-requested";
+  if (normalized.includes("only request cancellation of your own")) {
+    return "cancellation-not-authorized";
+  }
+  if (normalized.includes("not eligible")) return "cancellation-not-eligible";
+  if (normalized.includes("not found")) return "request-not-found";
+
+  return "cancellation-request-failed";
 }
 
 async function reservePendingLeaveHours({
