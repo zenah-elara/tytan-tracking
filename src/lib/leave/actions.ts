@@ -2,12 +2,18 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import {
   isEligibleActiveTytanEmployee,
   isRealTytanEmployee,
 } from "@/lib/employees/filters";
 import { canSupervisorApproveLeaveForEmployee } from "@/lib/leave/approval-scope";
+import {
+  BALANCE_BUCKET_BY_REQUEST_TYPE,
+  getBalanceBucketNameForRequest,
+  normalizeLeaveTypeName,
+} from "@/lib/leave/balance-buckets";
 import { notifyAdminsAndEmployeeManager } from "@/lib/notifications/actions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { ScheduleAdjustmentRow } from "@/lib/schedule/adjustments";
@@ -39,12 +45,6 @@ const EMPLOYEE_FILED_LEAVE_TYPE_NAMES = [
 const MONTHLY_ACCRUAL_HOURS = 8;
 const MONTHLY_ACCRUAL_LEAVE_TYPE_NAME = "VL/SL";
 const FINAL_LEAVE_APPROVER_EMAIL = "richelle@tytanteams.com";
-const BALANCE_BUCKET_BY_REQUEST_TYPE: Record<string, string> = {
-  "Sick Leave": "VL/SL",
-  "Vacation Leave": "VL/SL",
-  "Emergency Leave": "VL/SL",
-  "Floating Leave": "Floating Leave",
-};
 const DUPLICATE_REQUEST_WINDOW_MS = 2 * 60 * 1000;
 const SUPERVISOR_EXEMPT_JOB_TITLE_KEYWORDS = [
   "lead",
@@ -86,6 +86,21 @@ type CurrentEmployee = {
   work_email: string;
   role: string;
 };
+
+type LeaveCancellationRpcRow = {
+  id: string;
+  leave_request_id: string;
+  requested_at: string;
+  request_reason: string | null;
+  original_leave_status: string;
+  status: "pending" | "approved" | "rejected";
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_notes: string | null;
+  refunded_hours: number | string;
+};
+
+type LeaveCancellationNotificationEvent = "requested" | "approved" | "rejected";
 
 export type LeaveRequestSubmitState = {
   status: "idle" | "success" | "error" | "duplicate";
@@ -1167,7 +1182,7 @@ export async function requestLeaveCancellationAction(formData: FormData) {
   }
 
   const supabase = await createClient();
-  const { error } = await supabase.rpc("request_leave_cancellation", {
+  const { data, error } = await supabase.rpc("request_leave_cancellation", {
     target_leave_request_id: requestId,
     cancellation_reason: reason,
   });
@@ -1185,6 +1200,17 @@ export async function requestLeaveCancellationAction(formData: FormData) {
     );
   }
 
+  const cancellation = readLeaveCancellationRpcRow(data);
+
+  if (cancellation) {
+    scheduleLeaveCancellationNotification(cancellation, "requested");
+  } else {
+    console.warn("Leave cancellation request notification was not scheduled", {
+      requestId,
+      reason: "RPC returned no cancellation row",
+    });
+  }
+
   revalidateLeavePages();
   redirectWithStatus(EMPLOYEE_LEAVE_PATH, "success", "cancellation-requested");
 }
@@ -1199,7 +1225,7 @@ export async function reviewLeaveCancellationAction(formData: FormData) {
   }
 
   const supabase = await createClient();
-  const { error } = await supabase.rpc("review_leave_cancellation", {
+  const { data, error } = await supabase.rpc("review_leave_cancellation", {
     target_cancellation_id: cancellationId,
     cancellation_decision: decision,
     reviewer_notes: notes,
@@ -1213,6 +1239,21 @@ export async function reviewLeaveCancellationAction(formData: FormData) {
       message: error.message,
     });
     redirectWithStatus(ADMIN_LEAVE_APPROVALS_PATH, "error", "cancellation-review-failed");
+  }
+
+  const cancellation = readLeaveCancellationRpcRow(data);
+
+  if (cancellation) {
+    scheduleLeaveCancellationNotification(
+      cancellation,
+      decision === "approve" ? "approved" : "rejected",
+    );
+  } else {
+    console.warn("Leave cancellation review notification was not scheduled", {
+      cancellationId,
+      decision,
+      reason: "RPC returned no cancellation row",
+    });
   }
 
   revalidateLeavePages();
@@ -1885,15 +1926,6 @@ async function getLeaveBalanceContext({
   };
 }
 
-function getBalanceBucketNameForRequest(requestLeaveTypeName: string) {
-  const normalizedRequestTypeName = normalizeLeaveTypeName(requestLeaveTypeName);
-
-  return Object.entries(BALANCE_BUCKET_BY_REQUEST_TYPE).find(
-    ([requestTypeName]) =>
-      normalizeLeaveTypeName(requestTypeName) === normalizedRequestTypeName,
-  )?.[1] ?? null;
-}
-
 function findLeaveTypeByName(
   leaveTypes: { id: string; name: string }[],
   expectedName: string,
@@ -1905,10 +1937,6 @@ function findLeaveTypeByName(
       (leaveType) => normalizeLeaveTypeName(leaveType.name) === normalizedExpectedName,
     ) ?? null
   );
-}
-
-function normalizeLeaveTypeName(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function getLeaveBalanceYear(startDate: string) {
@@ -2077,6 +2105,166 @@ async function notifyLeaveReviewEvent({
     },
     idempotencyKey: `leave:${context.type}:${requestId}`,
   });
+}
+
+function scheduleLeaveCancellationNotification(
+  cancellation: LeaveCancellationRpcRow,
+  event: LeaveCancellationNotificationEvent,
+) {
+  after(async () => {
+    try {
+      await notifyLeaveCancellationEvent(cancellation, event);
+    } catch (error) {
+      console.error("Leave cancellation post-response notification failed", {
+        cancellationId: cancellation.id,
+        event,
+        error: error instanceof Error ? error.message : "Unknown notification error",
+      });
+    }
+  });
+}
+
+async function notifyLeaveCancellationEvent(
+  cancellation: LeaveCancellationRpcRow,
+  event: LeaveCancellationNotificationEvent,
+) {
+  const supabase = await createClient();
+  const { data: request, error: requestError } = await supabase
+    .from("leave_requests")
+    .select("id,employee_id,start_date,end_date,total_hours,status,leave_types(name)")
+    .eq("id", cancellation.leave_request_id)
+    .maybeSingle();
+
+  if (requestError || !request) {
+    console.warn("Leave cancellation notification context could not be loaded", {
+      cancellationId: cancellation.id,
+      event,
+      code: requestError?.code,
+      context: "leave_request",
+    });
+    return;
+  }
+
+  const employeeId = String(request.employee_id ?? "");
+  const [{ data: employee, error: employeeError }, reviewerResult] =
+    await Promise.all([
+      supabase
+        .from("employees")
+        .select("id,full_name,work_email,manager_id,department_id")
+        .eq("id", employeeId)
+        .maybeSingle(),
+      cancellation.reviewed_by
+        ? supabase
+            .from("employees")
+            .select("id,full_name")
+            .eq("id", cancellation.reviewed_by)
+            .maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+    ]);
+
+  if (employeeError || !employee) {
+    console.warn("Leave cancellation notification context could not be loaded", {
+      cancellationId: cancellation.id,
+      event,
+      code: employeeError?.code,
+      context: "employee",
+    });
+    return;
+  }
+
+  const reviewer = reviewerResult.data as { full_name?: string } | null;
+  const employeeContext = employee as {
+    id: string;
+    full_name: string;
+    work_email: string;
+    manager_id: string | null;
+    department_id: string | null;
+  };
+  const leaveTypeName = getLeaveTypeNameFromRequest(request);
+  const requestedHours = getLeaveRequestHours(request);
+  const balanceBucket = getBalanceBucketNameForRequest(leaveTypeName);
+  const reviewerName = reviewer?.full_name ?? "Admin";
+  const context = getLeaveCancellationNotificationContext(event);
+
+  await notifyAdminsAndEmployeeManager(
+    employeeId,
+    {
+      category: "leave_workflow",
+      type: context.type,
+      severity: context.severity,
+      title: context.title,
+      message: context.message(employeeContext.full_name, leaveTypeName, reviewerName),
+      entityType: "leave_request",
+      entityId: cancellation.leave_request_id,
+      metadata: {
+        cancellation_id: cancellation.id,
+        leave_type: leaveTypeName,
+        start_date: request.start_date,
+        end_date: request.end_date,
+        requested_hours: requestedHours,
+        original_leave_status: cancellation.original_leave_status,
+        cancellation_reason: cancellation.request_reason,
+        requested_at: cancellation.requested_at,
+        reviewer_name: cancellation.reviewed_by ? reviewerName : null,
+        reviewed_at: cancellation.reviewed_at,
+        review_notes: cancellation.review_notes,
+        refunded_hours: Number(cancellation.refunded_hours) || 0,
+        balance_bucket: balanceBucket,
+      },
+      idempotencyKey: `leave:cancellation:${event}:${cancellation.id}`,
+    },
+    employeeContext,
+  );
+}
+
+function getLeaveCancellationNotificationContext(
+  event: LeaveCancellationNotificationEvent,
+) {
+  const contexts = {
+    requested: {
+      type: "leave_cancellation_requested",
+      severity: "warning" as const,
+      title: "Leave Cancellation Requested",
+      message: (employeeName: string, leaveTypeName: string) =>
+        `${employeeName} requested cancellation of ${leaveTypeName}.`,
+    },
+    approved: {
+      type: "leave_cancellation_approved",
+      severity: "success" as const,
+      title: "Leave Cancellation Approved",
+      message: (employeeName: string, leaveTypeName: string, reviewerName: string) =>
+        `${reviewerName} approved ${employeeName}'s ${leaveTypeName} cancellation.`,
+    },
+    rejected: {
+      type: "leave_cancellation_rejected",
+      severity: "warning" as const,
+      title: "Leave Cancellation Rejected",
+      message: (employeeName: string, leaveTypeName: string, reviewerName: string) =>
+        `${reviewerName} rejected ${employeeName}'s ${leaveTypeName} cancellation.`,
+    },
+  };
+
+  return contexts[event];
+}
+
+function readLeaveCancellationRpcRow(data: unknown) {
+  const row = Array.isArray(data) ? data[0] : data;
+
+  if (!row || typeof row !== "object") return null;
+
+  const cancellation = row as Partial<LeaveCancellationRpcRow>;
+
+  if (
+    typeof cancellation.id !== "string" ||
+    typeof cancellation.leave_request_id !== "string" ||
+    typeof cancellation.requested_at !== "string" ||
+    typeof cancellation.original_leave_status !== "string" ||
+    !["pending", "approved", "rejected"].includes(cancellation.status ?? "")
+  ) {
+    return null;
+  }
+
+  return cancellation as LeaveCancellationRpcRow;
 }
 
 function getLeaveReviewNotificationContext(decision: string) {

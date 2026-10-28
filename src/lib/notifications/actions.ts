@@ -2,7 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentUserProfile } from "@/lib/auth/session";
-import { sendGoogleChatNotification } from "@/lib/notifications/google-chat";
+import {
+  sendGoogleChatNotification,
+  type GoogleChatWebhookAttempt,
+} from "@/lib/notifications/google-chat";
 import { createClient } from "@/lib/supabase/server";
 import type {
   GoogleChatDeliveryAttempt,
@@ -409,6 +412,9 @@ export async function retryGoogleChatDeliveryAction(formData: FormData) {
       status: "skipped",
       responseSummary:
         "Google Chat retry skipped because this notification already has a sent delivery attempt",
+      diagnostics: {
+        failure_kind: "already_sent",
+      },
     });
     revalidatePath(returnPath);
     return;
@@ -439,18 +445,16 @@ async function deliverExternalNotification(notification: OperationalNotification
     const sendDurationMs = Date.now() - stageStartedAt;
 
     stageStartedAt = Date.now();
-    await recordGoogleChatDeliveryAttempt(supabase, notification, {
-      status: result.status,
-      responseSummary:
-        result.status === "skipped"
-          ? "GOOGLE_CHAT_WEBHOOK_URL is not configured"
-          : result.responseSummary,
-    });
+    for (const attempt of result.attempts) {
+      await recordGoogleChatWebhookAttempt(supabase, notification, attempt);
+    }
     const attemptLogDurationMs = Date.now() - stageStartedAt;
+    const finalAttempt = result.attempts.at(-1);
 
     if (notification.category === "clock_activity") {
       console.info("Clock Google Chat delivery performance", {
         status: result.status,
+        requestAttempts: result.attempts.length,
         totalDurationMs: Date.now() - timingStartedAt,
         timings: [
           { stage: "google_chat_request", durationMs: sendDurationMs },
@@ -467,14 +471,21 @@ async function deliverExternalNotification(notification: OperationalNotification
         notificationId: notification.id,
         category: notification.category,
         type: notification.type,
-        responseSummary: result.responseSummary,
+        responseSummary: finalAttempt?.responseSummary,
+        failureKind: finalAttempt?.failureKind,
+        httpStatus: finalAttempt?.httpStatus,
+        requestAttempts: result.attempts.length,
+        payloadBytes: finalAttempt?.payloadBytes,
       });
     }
-  } catch {
+  } catch (error) {
     const stageStartedAt = Date.now();
     await recordGoogleChatDeliveryAttempt(supabase, notification, {
       status: "failed",
       responseSummary: "Google Chat delivery failed before the request completed",
+      diagnostics: {
+        failure_kind: "internal",
+      },
     });
     if (notification.category === "clock_activity") {
       console.info("Clock Google Chat delivery performance", {
@@ -492,14 +503,41 @@ async function deliverExternalNotification(notification: OperationalNotification
       notificationId: notification.id,
       category: notification.category,
       type: notification.type,
+      error: error instanceof Error ? error.message : "Unknown delivery error",
     });
   }
+}
+
+async function recordGoogleChatWebhookAttempt(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  notification: OperationalNotification,
+  attempt: GoogleChatWebhookAttempt,
+) {
+  await recordGoogleChatDeliveryAttempt(supabase, notification, {
+    status: attempt.status,
+    responseSummary: attempt.responseSummary,
+    attemptedAt: attempt.attemptedAt,
+    diagnostics: {
+      notification_type: notification.type,
+      request_attempt_number: attempt.requestAttemptNumber,
+      payload_bytes: attempt.payloadBytes,
+      duration_ms: attempt.durationMs,
+      http_status: attempt.httpStatus,
+      failure_kind: attempt.failureKind,
+      response_body: attempt.responseBody,
+    },
+  });
 }
 
 async function recordGoogleChatDeliveryAttempt(
   supabase: Awaited<ReturnType<typeof createClient>>,
   notification: OperationalNotification,
-  result: { status: "skipped" | "sent" | "failed"; responseSummary: string },
+  result: {
+    status: "skipped" | "sent" | "failed";
+    responseSummary: string;
+    attemptedAt?: string;
+    diagnostics?: Record<string, unknown>;
+  },
 ) {
   const { error } = await supabase.from("notification_delivery_attempts").insert({
     notification_id: notification.id,
@@ -511,7 +549,9 @@ async function recordGoogleChatDeliveryAttempt(
       type: notification.type,
       entity_type: notification.entityType,
       entity_id: notification.entityId,
+      ...(result.diagnostics ?? {}),
     },
+    attempted_at: result.attemptedAt,
   });
 
   if (error) {

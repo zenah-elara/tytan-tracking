@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { GoogleChatRetryButton } from "@/components/notifications/google-chat-retry-button";
 import {
   markAllNotificationsReadAction,
   markNotificationReadAction,
@@ -168,7 +169,8 @@ function GoogleChatDeliveryAttempts({
                     {attempt.notificationId}
                   </td>
                   <td className="max-w-md px-5 py-3 text-zinc-700">
-                    {attempt.responseSummary ?? "No response summary."}
+                    <p>{attempt.responseSummary ?? "No response summary."}</p>
+                    <DeliveryDiagnostics metadata={attempt.metadata} />
                   </td>
                   <td className="px-5 py-3 text-zinc-600">
                     {formatDateTime(attempt.attemptedAt)}
@@ -183,9 +185,7 @@ function GoogleChatDeliveryAttempts({
                           value={attempt.notificationId}
                         />
                         <input type="hidden" name="return_to" value={returnPath} />
-                        <button className="h-8 rounded-lg border border-[#001f4d]/20 bg-white px-3 text-xs font-black text-[#001f4d] transition hover:bg-[#eef4ff]">
-                          Retry
-                        </button>
+                        <GoogleChatRetryButton />
                       </form>
                     ) : (
                       <span className="text-xs font-semibold text-zinc-400">
@@ -201,6 +201,40 @@ function GoogleChatDeliveryAttempts({
       )}
     </section>
   );
+}
+
+function DeliveryDiagnostics({
+  metadata,
+}: {
+  metadata: Record<string, unknown>;
+}) {
+  const parts = [
+    formatDiagnostic("Type", metadata.notification_type ?? metadata.type),
+    formatDiagnostic("HTTP", metadata.http_status),
+    formatDiagnostic("Attempt", metadata.request_attempt_number),
+    formatDiagnostic("Payload", metadata.payload_bytes, " bytes"),
+    formatDiagnostic("Duration", metadata.duration_ms, " ms"),
+    formatDiagnostic("Failure", metadata.failure_kind),
+  ].filter((part): part is string => Boolean(part));
+
+  if (parts.length === 0) return null;
+
+  return (
+    <p className="mt-1 text-xs text-zinc-500">
+      {parts.join(" · ")}
+    </p>
+  );
+}
+
+function formatDiagnostic(
+  label: string,
+  value: unknown,
+  suffix = "",
+) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  if (value === "") return null;
+
+  return `${label}: ${value}${suffix}`;
 }
 
 function Pagination({

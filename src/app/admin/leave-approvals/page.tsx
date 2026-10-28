@@ -1,11 +1,12 @@
 import {
   deleteLeaveRequestAction,
-  reviewLeaveCancellationAction,
   reviewLeaveRequestAction,
 } from "@/lib/leave/actions";
+import { CancellationReviewControls } from "@/components/leave/cancellation-review-controls";
 import { getCurrentUserProfile } from "@/lib/auth/session";
 import { getRealEmployeeIds, isRealTytanEmployee } from "@/lib/employees/filters";
 import { getLeaveSupervisorApprovalScope } from "@/lib/leave/approval-scope";
+import { getBalanceBucketNameForRequest } from "@/lib/leave/balance-buckets";
 import {
   formatLeaveRequestStatus,
   getLeaveApprovalStage,
@@ -39,6 +40,7 @@ type LeaveRequestRow = {
   start_date: string;
   end_date: string;
   total_hours: number;
+  paid_hours: number;
   reason: string | null;
   status: LeaveRequestStatus;
   submitted_at: string;
@@ -57,6 +59,7 @@ type CancellationLeaveRequestRow = Pick<
   | "start_date"
   | "end_date"
   | "total_hours"
+  | "paid_hours"
   | "status"
 >;
 
@@ -94,7 +97,7 @@ export default async function AdminLeaveApprovalsPage({
     await Promise.all([
       supabase
         .from("leave_requests")
-        .select("id,employee_id,leave_type_id,start_date,end_date,total_hours,reason,status,submitted_at,supervisorapprovedat,adminapprovedat,deletedat,processedat,processingstatus")
+        .select("id,employee_id,leave_type_id,start_date,end_date,total_hours,paid_hours,reason,status,submitted_at,supervisorapprovedat,adminapprovedat,deletedat,processedat,processingstatus")
         .in("status", ["pending_supervisor", "pending_admin"])
         .is("deletedat", null)
         .order("submitted_at", { ascending: true }),
@@ -105,7 +108,7 @@ export default async function AdminLeaveApprovalsPage({
       supabase.from("leave_types").select("id,name").order("name"),
       supabase
         .from("leave_cancellation_requests")
-        .select("id,leave_request_id,requested_at,request_reason,original_leave_status,status,leave_requests(id,employee_id,leave_type_id,start_date,end_date,total_hours,status)")
+        .select("id,leave_request_id,requested_at,request_reason,original_leave_status,status,leave_requests(id,employee_id,leave_type_id,start_date,end_date,total_hours,paid_hours,status)")
         .eq("status", "pending")
         .order("requested_at", { ascending: true }),
     ]);
@@ -228,6 +231,10 @@ function CancellationSection({
         <div className="grid gap-4 p-5">
           {cancellations.map((cancellation) => {
             const request = cancellation.leaveRequest;
+            const employeeName =
+              employeeNames.get(request.employee_id) ?? "Employee";
+            const leaveTypeName =
+              typeNames.get(request.leave_type_id) ?? "Leave";
 
             return (
               <article
@@ -237,10 +244,10 @@ function CancellationSection({
                 <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr_1fr]">
                   <div>
                     <p className="font-bold text-[#001f4d]">
-                      {employeeNames.get(request.employee_id) ?? "Employee"}
+                      {employeeName}
                     </p>
                     <p className="mt-1 text-sm text-zinc-600">
-                      {typeNames.get(request.leave_type_id) ?? "Leave"} -{" "}
+                      {leaveTypeName} -{" "}
                       {formatHours(request.total_hours)}
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2">
@@ -268,36 +275,17 @@ function CancellationSection({
                   </div>
                 </div>
                 {canReview ? (
-                  <form
-                    action={reviewLeaveCancellationAction}
-                    className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
-                  >
-                    <input
-                      type="hidden"
-                      name="cancellation_id"
-                      value={cancellation.id}
-                    />
-                    <textarea
-                      name="review_notes"
-                      rows={2}
-                      placeholder="Admin review notes (optional)"
-                      className="min-w-0 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900"
-                    />
-                    <button
-                      name="decision"
-                      value="approve"
-                      className="h-10 rounded-lg bg-[#f2d300] px-4 text-sm font-bold text-[#001f4d]"
-                    >
-                      Approve Cancellation
-                    </button>
-                    <button
-                      name="decision"
-                      value="reject"
-                      className="h-10 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-bold text-zinc-700"
-                    >
-                      Reject Cancellation
-                    </button>
-                  </form>
+                  <CancellationReviewControls
+                    cancellationId={cancellation.id}
+                    employeeName={employeeName}
+                    leaveTypeName={leaveTypeName}
+                    startDate={request.start_date}
+                    endDate={request.end_date}
+                    totalHours={Number(request.total_hours)}
+                    paidHours={Number(request.paid_hours ?? 0)}
+                    originalLeaveStatus={cancellation.original_leave_status}
+                    balanceBucket={getBalanceBucketNameForRequest(leaveTypeName)}
+                  />
                 ) : (
                   <p className="mt-4 text-sm font-semibold text-zinc-600">
                     Waiting for an admin to review this cancellation.
