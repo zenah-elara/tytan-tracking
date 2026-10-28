@@ -6,6 +6,7 @@ import {
   sendGoogleChatNotification,
   type GoogleChatWebhookAttempt,
 } from "@/lib/notifications/google-chat";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type {
   GoogleChatDeliveryAttempt,
@@ -440,15 +441,15 @@ async function deliverExternalNotification(notification: OperationalNotification
   const supabase = await createClient();
 
   try {
-    let stageStartedAt = Date.now();
-    const result = await sendGoogleChatNotification(notification);
+    const stageStartedAt = Date.now();
+    const result = await sendGoogleChatNotification(notification, {
+      beforeRetryAttempt: async () =>
+        checkGoogleChatRetryEligibility(notification.id),
+      onAttempt: async (attempt) => {
+        await recordGoogleChatWebhookAttempt(supabase, notification, attempt);
+      },
+    });
     const sendDurationMs = Date.now() - stageStartedAt;
-
-    stageStartedAt = Date.now();
-    for (const attempt of result.attempts) {
-      await recordGoogleChatWebhookAttempt(supabase, notification, attempt);
-    }
-    const attemptLogDurationMs = Date.now() - stageStartedAt;
     const finalAttempt = result.attempts.at(-1);
 
     if (notification.category === "clock_activity") {
@@ -458,10 +459,6 @@ async function deliverExternalNotification(notification: OperationalNotification
         totalDurationMs: Date.now() - timingStartedAt,
         timings: [
           { stage: "google_chat_request", durationMs: sendDurationMs },
-          {
-            stage: "delivery_attempt_insert",
-            durationMs: attemptLogDurationMs,
-          },
         ],
       });
     }
@@ -508,6 +505,36 @@ async function deliverExternalNotification(notification: OperationalNotification
   }
 }
 
+async function checkGoogleChatRetryEligibility(notificationId: string) {
+  try {
+    const admin = createAdminClient();
+    const { data, error } = await admin
+      .from("notification_delivery_attempts")
+      .select("id")
+      .eq("notification_id", notificationId)
+      .eq("channel", "google_chat")
+      .eq("status", "sent")
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.warn("Google Chat retry sent-status check failed", {
+        notificationId,
+        code: error.code,
+      });
+      return "check_failed" as const;
+    }
+
+    return data ? ("already_sent" as const) : ("continue" as const);
+  } catch (error) {
+    console.warn("Google Chat retry sent-status check could not run", {
+      notificationId,
+      error: error instanceof Error ? error.message : "Unknown check error",
+    });
+    return "check_failed" as const;
+  }
+}
+
 async function recordGoogleChatWebhookAttempt(
   supabase: Awaited<ReturnType<typeof createClient>>,
   notification: OperationalNotification,
@@ -525,6 +552,11 @@ async function recordGoogleChatWebhookAttempt(
       http_status: attempt.httpStatus,
       failure_kind: attempt.failureKind,
       response_body: attempt.responseBody,
+      retryable_later:
+        attempt.failureKind === "http" &&
+        attempt.httpStatus !== null &&
+        attempt.httpStatus >= 500 &&
+        attempt.httpStatus <= 599,
     },
   });
 }

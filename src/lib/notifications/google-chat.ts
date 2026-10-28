@@ -4,8 +4,20 @@ import type { OperationalNotification } from "@/types/notifications";
 
 const GOOGLE_CHAT_TIMEOUT_MS = 5_000;
 const GOOGLE_CHAT_MAX_ATTEMPTS = 3;
-const GOOGLE_CHAT_RETRY_BASE_DELAY_MS = 250;
+const GOOGLE_CHAT_RETRY_BASE_DELAY_MS = 4_000;
 const GOOGLE_CHAT_RESPONSE_BODY_LIMIT = 500;
+
+type GoogleChatRetryGuardResult =
+  | "continue"
+  | "already_sent"
+  | "check_failed";
+
+type GoogleChatDeliveryOptions = {
+  beforeRetryAttempt?: (
+    nextAttemptNumber: number,
+  ) => Promise<GoogleChatRetryGuardResult>;
+  onAttempt?: (attempt: GoogleChatWebhookAttempt) => Promise<void>;
+};
 
 export type GoogleChatWebhookAttempt = {
   status: "skipped" | "sent" | "failed";
@@ -15,7 +27,14 @@ export type GoogleChatWebhookAttempt = {
   payloadBytes: number;
   durationMs: number;
   httpStatus: number | null;
-  failureKind: "configuration" | "http" | "timeout" | "network" | null;
+  failureKind:
+    | "configuration"
+    | "http"
+    | "timeout"
+    | "network"
+    | "already_sent"
+    | "sent_status_check_failed"
+    | null;
   responseBody: string | null;
 };
 
@@ -26,6 +45,7 @@ export type GoogleChatDeliveryResult = {
 
 export async function sendGoogleChatNotification(
   notification: OperationalNotification,
+  options: GoogleChatDeliveryOptions = {},
 ): Promise<GoogleChatDeliveryResult> {
   const webhookUrl = process.env.GOOGLE_CHAT_WEBHOOK_URL?.trim();
   const requestBody = JSON.stringify({
@@ -34,21 +54,23 @@ export async function sendGoogleChatNotification(
   const payloadBytes = Buffer.byteLength(requestBody, "utf8");
 
   if (!webhookUrl) {
+    const attempt: GoogleChatWebhookAttempt = {
+      status: "skipped",
+      responseSummary: "GOOGLE_CHAT_WEBHOOK_URL is not configured",
+      attemptedAt: new Date().toISOString(),
+      requestAttemptNumber: 1,
+      payloadBytes,
+      durationMs: 0,
+      httpStatus: null,
+      failureKind: "configuration",
+      responseBody: null,
+    };
+
+    await options.onAttempt?.(attempt);
+
     return {
       status: "skipped",
-      attempts: [
-        {
-          status: "skipped",
-          responseSummary: "GOOGLE_CHAT_WEBHOOK_URL is not configured",
-          attemptedAt: new Date().toISOString(),
-          requestAttemptNumber: 1,
-          payloadBytes,
-          durationMs: 0,
-          httpStatus: null,
-          failureKind: "configuration",
-          responseBody: null,
-        },
-      ],
+      attempts: [attempt],
     };
   }
 
@@ -92,6 +114,7 @@ export async function sendGoogleChatNotification(
       };
 
       attempts.push(attempt);
+      await options.onAttempt?.(attempt);
 
       if (response.ok) {
         return { status: "sent", attempts };
@@ -102,6 +125,24 @@ export async function sendGoogleChatNotification(
         requestAttemptNumber < GOOGLE_CHAT_MAX_ATTEMPTS
       ) {
         await waitForRetry(requestAttemptNumber);
+
+        const retryGuardResult =
+          (await options.beforeRetryAttempt?.(requestAttemptNumber + 1)) ??
+          "continue";
+
+        if (retryGuardResult !== "continue") {
+          const skippedAttempt = buildRetryGuardSkippedAttempt({
+            requestAttemptNumber: requestAttemptNumber + 1,
+            payloadBytes,
+            retryGuardResult,
+          });
+
+          attempts.push(skippedAttempt);
+          await options.onAttempt?.(skippedAttempt);
+
+          return { status: "skipped", attempts };
+        }
+
         continue;
       }
 
@@ -112,7 +153,7 @@ export async function sendGoogleChatNotification(
     } catch (error) {
       const timedOut =
         error instanceof Error && error.name === "AbortError";
-      attempts.push({
+      const attempt: GoogleChatWebhookAttempt = {
         status: "failed",
         responseSummary: timedOut
           ? `Google Chat request timed out after ${GOOGLE_CHAT_TIMEOUT_MS} ms`
@@ -124,7 +165,10 @@ export async function sendGoogleChatNotification(
         httpStatus: null,
         failureKind: timedOut ? "timeout" : "network",
         responseBody: null,
-      });
+      };
+
+      attempts.push(attempt);
+      await options.onAttempt?.(attempt);
 
       // A timeout or network failure is ambiguous: Google may have accepted the
       // message without returning a response, so automatic retry could duplicate it.
@@ -146,6 +190,32 @@ async function waitForRetry(requestAttemptNumber: number) {
     GOOGLE_CHAT_RETRY_BASE_DELAY_MS * 2 ** (requestAttemptNumber - 1);
 
   await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function buildRetryGuardSkippedAttempt({
+  requestAttemptNumber,
+  payloadBytes,
+  retryGuardResult,
+}: {
+  requestAttemptNumber: number;
+  payloadBytes: number;
+  retryGuardResult: Exclude<GoogleChatRetryGuardResult, "continue">;
+}): GoogleChatWebhookAttempt {
+  const alreadySent = retryGuardResult === "already_sent";
+
+  return {
+    status: "skipped",
+    responseSummary: alreadySent
+      ? "Google Chat retry skipped because this notification already has a sent delivery attempt"
+      : "Google Chat retry skipped because sent delivery status could not be verified",
+    attemptedAt: new Date().toISOString(),
+    requestAttemptNumber,
+    payloadBytes,
+    durationMs: 0,
+    httpStatus: null,
+    failureKind: alreadySent ? "already_sent" : "sent_status_check_failed",
+    responseBody: null,
+  };
 }
 
 function buildHttpResponseSummary(
